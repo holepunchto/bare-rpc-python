@@ -8,8 +8,10 @@ from .messages import (
     RPCRemoteError,
     StreamMessage,
     decode_frame,
+    encode_error_response,
     encode_event,
     encode_request,
+    encode_response,
 )
 
 __all__ = [
@@ -21,6 +23,8 @@ __all__ = [
     "StreamMessage",
     "Type",
     "decode_frame",
+    "encode_error_response",
     "encode_event",
     "encode_request",
+    "encode_response",
 ]

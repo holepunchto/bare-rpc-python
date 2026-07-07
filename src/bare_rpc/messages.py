@@ -84,6 +84,61 @@ def encode_event(command, data=None):
     return encode_request(0, command, data=data)
 
 
+def _preencode_response(state, msg):
+    cenc.uint.preencode(state, Type.RESPONSE)
+    cenc.uint.preencode(state, msg.id)
+    is_error = msg.error is not None
+    cenc.bool.preencode(state, is_error)
+    cenc.uint.preencode(state, msg.stream)
+    if is_error:
+        cenc.utf8.preencode(state, msg.error.message)
+        cenc.utf8.preencode(state, msg.error.code)
+        cenc.int.preencode(state, msg.error.errno)
+    elif msg.stream == 0:
+        cenc.buffer.preencode(state, msg.data or b"")
+
+
+def _encode_response(state, msg):
+    cenc.uint.encode(state, Type.RESPONSE)
+    cenc.uint.encode(state, msg.id)
+    is_error = msg.error is not None
+    cenc.bool.encode(state, is_error)
+    cenc.uint.encode(state, msg.stream)
+    if is_error:
+        cenc.utf8.encode(state, msg.error.message)
+        cenc.utf8.encode(state, msg.error.code)
+        cenc.int.encode(state, msg.error.errno)
+    elif msg.stream == 0:
+        cenc.buffer.encode(state, msg.data or b"")
+
+
+def _decode_response(state):
+    id = cenc.uint.decode(state)
+    is_error = cenc.bool.decode(state)
+    stream = cenc.uint.decode(state)
+    if is_error:
+        message = cenc.utf8.decode(state)
+        code = cenc.utf8.decode(state)
+        errno = cenc.int.decode(state)
+        error = RPCRemoteError(message=message, code=code, errno=errno)
+        return ResponseMessage(id=id, stream=stream, data=None, error=error)
+    data = cenc.buffer.decode(state) if stream == 0 else None
+    return ResponseMessage(id=id, stream=stream, data=data, error=None)
+
+
+def encode_response(id, *, stream=0, data=None):
+    return _encode_frame(
+        _preencode_response, _encode_response, ResponseMessage(id, stream, data, None)
+    )
+
+
+def encode_error_response(id, message, code, errno=0):
+    error = RPCRemoteError(message=message, code=code, errno=errno)
+    return _encode_frame(
+        _preencode_response, _encode_response, ResponseMessage(id, 0, None, error)
+    )
+
+
 def decode_frame(frame):
     state = cenc.State(frame)
     length = cenc.uint32.decode(state)
@@ -92,4 +147,6 @@ def decode_frame(frame):
     type_ = cenc.uint.decode(state)
     if type_ == Type.REQUEST:
         return _decode_request(state)
+    if type_ == Type.RESPONSE:
+        return _decode_response(state)
     return None
