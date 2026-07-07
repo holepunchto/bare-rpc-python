@@ -7,6 +7,9 @@ from .messages import (
     ResponseMessage,
     RPCRemoteError,
     StreamMessage,
+    decode_frame,
+    encode_event,
+    encode_request,
 )
 
 __all__ = [
@@ -17,4 +20,7 @@ __all__ = [
     "StreamFlag",
     "StreamMessage",
     "Type",
+    "decode_frame",
+    "encode_event",
+    "encode_request",
 ]
