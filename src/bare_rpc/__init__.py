@@ -12,6 +12,7 @@ from .messages import (
     encode_event,
     encode_request,
     encode_response,
+    encode_stream,
 )
 
 __all__ = [
@@ -27,4 +28,5 @@ __all__ = [
     "encode_event",
     "encode_request",
     "encode_response",
+    "encode_stream",
 ]

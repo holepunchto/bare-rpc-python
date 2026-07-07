@@ -2,7 +2,13 @@ import compact_encoding as cenc
 import pytest
 
 import bare_rpc as rpc
-from bare_rpc import RequestMessage, ResponseMessage, RPCRemoteError
+from bare_rpc import (
+    RequestMessage,
+    ResponseMessage,
+    RPCRemoteError,
+    StreamFlag,
+    StreamMessage,
+)
 
 
 def test_encode_request_matches_fixture():
@@ -84,3 +90,45 @@ def test_decode_response_empty_data_is_empty_bytes():
     assert isinstance(msg, ResponseMessage)
     assert msg.data == b""
     assert msg.error is None
+
+
+def test_encode_stream_data_matches_fixture():
+    # envelope[9]: stream id 2, flags REQUEST|DATA (0x110), data "hi"
+    flags = StreamFlag.REQUEST | StreamFlag.DATA
+    assert rpc.encode_stream(2, flags, data=b"hi").hex() == "080000000302fd1001026869"
+
+
+def test_encode_stream_control_no_data_matches_fixture():
+    # envelope[11]: stream id 2, flags REQUEST|OPEN (0x101), no payload
+    flags = StreamFlag.REQUEST | StreamFlag.OPEN
+    assert rpc.encode_stream(2, flags).hex() == "050000000302fd0101"
+
+
+def test_decode_stream_data_roundtrip():
+    flags = StreamFlag.REQUEST | StreamFlag.DATA
+    msg = rpc.decode_frame(rpc.encode_stream(2, flags, data=b"hi"))
+    assert msg == StreamMessage(id=2, flags=flags, data=b"hi", error=None)
+
+
+def test_decode_stream_control_has_no_data_or_error():
+    flags = StreamFlag.REQUEST | StreamFlag.OPEN
+    msg = rpc.decode_frame(rpc.encode_stream(2, flags))
+    assert msg == StreamMessage(id=2, flags=flags, data=None, error=None)
+
+
+def test_stream_error_roundtrip():
+    flags = StreamFlag.RESPONSE | StreamFlag.ERROR
+    err = RPCRemoteError("boom", "BAD", 400)
+    msg = rpc.decode_frame(rpc.encode_stream(3, flags, error=err))
+    assert msg == StreamMessage(id=3, flags=flags, data=None, error=err)
+
+
+def test_encode_stream_error_flag_without_error_raises():
+    with pytest.raises(ValueError):
+        rpc.encode_stream(3, StreamFlag.RESPONSE | StreamFlag.ERROR)
+
+
+def test_encode_stream_data_flag_without_data_encodes_empty_buffer():
+    flags = StreamFlag.REQUEST | StreamFlag.DATA
+    msg = rpc.decode_frame(rpc.encode_stream(2, flags))
+    assert msg.data == b""  # empty buffer, not an error

@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import compact_encoding as cenc
 
-from .constants import Type
+from .constants import StreamFlag, Type
 
 
 @dataclass(frozen=True)
@@ -139,6 +139,53 @@ def encode_error_response(id, message, code, errno=0):
     )
 
 
+def _preencode_stream(state, msg):
+    cenc.uint.preencode(state, Type.STREAM)
+    cenc.uint.preencode(state, msg.id)
+    cenc.uint.preencode(state, msg.flags)
+    if msg.flags & StreamFlag.ERROR:
+        cenc.utf8.preencode(state, msg.error.message)
+        cenc.utf8.preencode(state, msg.error.code)
+        cenc.int.preencode(state, msg.error.errno)
+    elif msg.flags & StreamFlag.DATA:
+        cenc.buffer.preencode(state, msg.data or b"")
+
+
+def _encode_stream(state, msg):
+    cenc.uint.encode(state, Type.STREAM)
+    cenc.uint.encode(state, msg.id)
+    cenc.uint.encode(state, msg.flags)
+    if msg.flags & StreamFlag.ERROR:
+        cenc.utf8.encode(state, msg.error.message)
+        cenc.utf8.encode(state, msg.error.code)
+        cenc.int.encode(state, msg.error.errno)
+    elif msg.flags & StreamFlag.DATA:
+        cenc.buffer.encode(state, msg.data or b"")
+
+
+def _decode_stream(state):
+    id = cenc.uint.decode(state)
+    flags = cenc.uint.decode(state)
+    if flags & StreamFlag.ERROR:
+        message = cenc.utf8.decode(state)
+        code = cenc.utf8.decode(state)
+        errno = cenc.int.decode(state)
+        error = RPCRemoteError(message=message, code=code, errno=errno)
+        return StreamMessage(id=id, flags=flags, data=None, error=error)
+    if flags & StreamFlag.DATA:
+        data = cenc.buffer.decode(state)
+        return StreamMessage(id=id, flags=flags, data=data, error=None)
+    return StreamMessage(id=id, flags=flags, data=None, error=None)
+
+
+def encode_stream(id, flags, *, data=None, error=None):
+    if flags & StreamFlag.ERROR and error is None:
+        raise ValueError("stream ERROR flag set but error is None")
+    return _encode_frame(
+        _preencode_stream, _encode_stream, StreamMessage(id, flags, data, error)
+    )
+
+
 def decode_frame(frame):
     state = cenc.State(frame)
     length = cenc.uint32.decode(state)
@@ -149,4 +196,6 @@ def decode_frame(frame):
         return _decode_request(state)
     if type_ == Type.RESPONSE:
         return _decode_response(state)
+    if type_ == Type.STREAM:
+        return _decode_stream(state)
     return None
