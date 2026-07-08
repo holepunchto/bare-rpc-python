@@ -170,7 +170,10 @@ def test_oversize_frame_poisons():
         await r.receive((100).to_bytes(4, "little"))
         return errors
 
-    assert len(asyncio.run(body())) == 1
+    errors = asyncio.run(body())
+    assert len(errors) == 1
+    assert isinstance(errors[0], ValueError)
+    assert "max_frame_size" in str(errors[0])
 
 
 def test_send_raise_poisons_and_propagates():
