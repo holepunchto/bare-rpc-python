@@ -1,7 +1,7 @@
 import asyncio
 
 import bare_rpc as rpc
-from bare_rpc import RPC
+from bare_rpc import RPC, RPCRemoteError
 
 
 def make_pair(
@@ -98,3 +98,108 @@ def test_receive_reassembles_split_and_coalesced_frames():
         return seen
 
     assert asyncio.run(body()) == [(1, 5, b"hi"), (2, 6, b"yo")]
+
+
+def test_handler_raise_becomes_error_response():
+    class Boom(Exception):
+        code = "BAD"
+        errno = 42
+
+    async def on_request(_req):
+        raise Boom("kaboom")
+
+    async def body():
+        a, _b = make_pair(on_request_b=on_request)
+        try:
+            await a.request(5, b"x")
+        except RPCRemoteError as err:
+            return err
+        raise AssertionError("expected RPCRemoteError")
+
+    err = asyncio.run(body())
+    assert err.message == "kaboom"
+    assert err.code == "BAD"
+    assert err.errno == 42
+
+
+def test_decode_failure_poisons_and_rejects_pending():
+    async def body():
+        errors = []
+        sent = []
+
+        async def send(frame):
+            sent.append(frame)
+
+        r = RPC(send, on_error=errors.append)
+        # start a request so there is a pending future to reject
+        task = asyncio.ensure_future(r.request(5, b"x"))
+        await asyncio.sleep(0)  # let the request register + send
+        # feed a complete frame whose body overruns during decode: length=1,
+        # body is just the REQUEST type byte, so decoding the request fields
+        # runs out of bytes -> OutOfBounds -> poison. (A frame that is merely
+        # short of its declared length is buffered, not a decode failure.)
+        await r.receive((1).to_bytes(4, "little") + bytes([1]))
+        try:
+            await task
+        except Exception as exc:  # noqa: BLE001
+            first = exc
+        assert errors  # on_error was called
+        # subsequent request raises immediately; event is a no-op; receive is a no-op
+        raised = None
+        try:
+            await r.request(1)
+        except Exception as exc:  # noqa: BLE001
+            raised = exc
+        await r.event(1)  # no raise
+        await r.receive(b"whatever")  # no raise
+        return first, raised
+
+    first, raised = asyncio.run(body())
+    assert first is raised  # same stored failure error
+
+
+def test_oversize_frame_poisons():
+    async def body():
+        errors = []
+
+        async def send(_frame):
+            pass
+
+        r = RPC(send, on_error=errors.append, max_frame_size=8)
+        # length prefix claims 100 bytes -> 4 + 100 > 8
+        await r.receive((100).to_bytes(4, "little"))
+        return errors
+
+    assert len(asyncio.run(body())) == 1
+
+
+def test_send_raise_poisons_and_propagates():
+    async def body():
+        errors = []
+
+        async def send(_frame):
+            raise OSError("transport down")
+
+        r = RPC(send, on_error=errors.append)
+        raised = None
+        try:
+            await r.request(5, b"x")
+        except OSError as exc:
+            raised = exc
+        return errors, raised
+
+    errors, raised = asyncio.run(body())
+    assert isinstance(raised, OSError)
+    assert errors and errors[0] is raised
+
+
+def test_request_with_no_handler_is_unanswered():
+    async def body():
+        a, _b = make_pair()  # no on_request on b
+        try:
+            await asyncio.wait_for(a.request(5, b"x"), 0.2)
+        except asyncio.TimeoutError:
+            return "unanswered"
+        return "answered"
+
+    assert asyncio.run(body()) == "unanswered"

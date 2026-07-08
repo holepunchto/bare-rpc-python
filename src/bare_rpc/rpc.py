@@ -55,6 +55,7 @@ class RPC:
         try:
             await self._send(encode_request(request_id, command, data=data))
         except Exception as exc:
+            self._pending.pop(request_id, None)
             self._fail(exc)
             raise
         return await future
