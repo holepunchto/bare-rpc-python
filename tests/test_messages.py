@@ -132,3 +132,16 @@ def test_encode_stream_data_flag_without_data_encodes_empty_buffer():
     flags = StreamFlag.REQUEST | StreamFlag.DATA
     msg = rpc.decode_frame(rpc.encode_stream(2, flags))
     assert msg.data == b""  # empty buffer, not an error
+
+
+def test_rpc_remote_error_is_usable_as_exception():
+    err = RPCRemoteError(message="boom", code="BAD", errno=400)
+    assert isinstance(err, Exception)
+    # dataclass equality is preserved
+    assert err == RPCRemoteError(message="boom", code="BAD", errno=400)
+    # raisable and fields survive
+    with pytest.raises(RPCRemoteError) as excinfo:
+        raise err
+    assert excinfo.value.message == "boom"
+    assert excinfo.value.code == "BAD"
+    assert excinfo.value.errno == 400

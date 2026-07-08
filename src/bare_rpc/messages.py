@@ -6,7 +6,7 @@ from .constants import StreamFlag, Type
 
 
 @dataclass(frozen=True)
-class RPCRemoteError:
+class RPCRemoteError(Exception):
     message: str
     code: str
     errno: int
