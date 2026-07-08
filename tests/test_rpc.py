@@ -203,3 +203,36 @@ def test_request_with_no_handler_is_unanswered():
         return "answered"
 
     assert asyncio.run(body()) == "unanswered"
+
+
+def test_event_handler_error_poisons_the_connection():
+    async def body():
+        errors = []
+        done = asyncio.Event()
+
+        def on_event(_ev):
+            raise ValueError("bad event")
+
+        def on_error(err):
+            errors.append(err)
+            done.set()
+
+        async def send(_frame):
+            pass
+
+        r = RPC(send, on_event=on_event, on_error=on_error)
+        # an event frame (id 0) whose sync handler raises -> _run_event -> _fail
+        await r.receive(rpc.encode_event(3, b"note"))
+        await asyncio.wait_for(done.wait(), 1.0)
+        # post-poison, a subsequent request raises the stored error
+        raised = None
+        try:
+            await r.request(1)
+        except Exception as exc:  # noqa: BLE001
+            raised = exc
+        return errors, raised
+
+    errors, raised = asyncio.run(body())
+    assert len(errors) == 1
+    assert isinstance(raised, ValueError)
+    assert str(raised) == "bad event"
