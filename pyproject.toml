@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bare-rpc-python"
+version = "0.0.1"
+description = "Pure-Python port of the bare-rpc message and frame wire codec"
+readme = "README.md"
+license = "Apache-2.0"
+authors = [{ name = "Holepunch" }]
+requires-python = ">=3.10"
+dependencies = [
+  "compact-encoding-python @ git+https://github.com/holepunchto/compact-encoding-python.git@e7e1f080eb413c6ea06f8c6400a9716857c67266",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bare_rpc"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.ruff]
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
