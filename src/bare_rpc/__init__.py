@@ -1,6 +1,7 @@
 """bare-rpc message and frame codec, wire-compatible with the JS reference."""
 
 from .constants import StreamFlag, Type
+from .incoming import IncomingEvent, IncomingRequest
 from .messages import (
     DecodedMessage,
     RequestMessage,
@@ -14,9 +15,13 @@ from .messages import (
     encode_response,
     encode_stream,
 )
+from .rpc import RPC
 
 __all__ = [
     "DecodedMessage",
+    "IncomingEvent",
+    "IncomingRequest",
+    "RPC",
     "RPCRemoteError",
     "RequestMessage",
     "ResponseMessage",
