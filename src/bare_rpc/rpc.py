@@ -14,6 +14,7 @@ from .messages import (
     encode_request,
     encode_stream,
 )
+from .outgoing_stream import OutgoingStream
 
 DEFAULT_MAX_FRAME_SIZE = 16 * 1024 * 1024
 
@@ -108,6 +109,35 @@ class RPC:
         self._send(encode_request(request_id, command, data=data))
         return await future
 
+    async def stream_request(self, command):
+        if self._failed is not None:
+            raise self._failed
+        if self._closed:
+            raise RuntimeError("RPC is closed")
+        self._id += 1
+        request_id = self._id
+        future = asyncio.get_running_loop().create_future()
+        self._pending[request_id] = future
+        outgoing = OutgoingStream(self, request_id, StreamFlag.REQUEST)
+        self._outgoing_streams[request_id] = outgoing
+        self._send(encode_request(request_id, command, stream=StreamFlag.OPEN))
+        return outgoing, future
+
+    async def create_bidirectional_stream(self, command):
+        if self._failed is not None:
+            raise self._failed
+        if self._closed:
+            raise RuntimeError("RPC is closed")
+        self._id += 1
+        request_id = self._id
+        future = asyncio.get_running_loop().create_future()
+        self._pending_response_streams[request_id] = future
+        outgoing = OutgoingStream(self, request_id, StreamFlag.REQUEST)
+        self._outgoing_streams[request_id] = outgoing
+        self._send(encode_request(request_id, command, stream=StreamFlag.OPEN))
+        incoming = await future
+        return outgoing, incoming
+
     async def event(self, command, data=None):
         if self._failed is not None or self._closed:
             return
@@ -139,7 +169,9 @@ class RPC:
         if message is None:
             return
         if isinstance(message, RequestMessage):
-            if message.id == 0:
+            if message.stream & StreamFlag.OPEN:
+                self._on_request_stream_open(message)
+            elif message.id == 0:
                 if self._on_event is not None:
                     self._spawn(
                         self._run_event(IncomingEvent(message.command, message.data))
@@ -180,6 +212,26 @@ class RPC:
         self._incoming_streams[message.id] = incoming
         self._send(encode_stream(message.id, StreamFlag.RESPONSE | StreamFlag.OPEN))
         pending.set_result(incoming)
+
+    def _on_request_stream_open(self, message):
+        if self._on_request is None:
+            return
+        incoming = IncomingStream(self, message.id, StreamFlag.REQUEST)
+        self._incoming_streams[message.id] = incoming
+        self._send(encode_stream(message.id, StreamFlag.REQUEST | StreamFlag.OPEN))
+        req = IncomingRequest(self, message.id, message.command, message.data)
+        req.request_stream = incoming
+        self._spawn(self._run_stream_request(req))
+
+    async def _run_stream_request(self, req):
+        # Unlike _run_request, a throwing stream-open handler is NOT auto-rejected
+        # (that would emit a spurious stream==0 error frame); the generated code
+        # is responsible for replying / destroying its streams. Matches Swift's
+        # try? on handleRequestStreamOpen.
+        try:
+            await _maybe_await(self._on_request(req))
+        except Exception:
+            pass
 
     def _on_stream(self, message):
         flags = message.flags

@@ -74,3 +74,60 @@ def test_reject_before_stream_opens_fails_the_caller():
 
     raised = asyncio.run(asyncio.wait_for(body(), 2))
     assert raised == RPCRemoteError("nope", "NO", 4)
+
+
+def test_request_stream_roundtrip():
+    async def on_request(req):
+        chunks = [chunk async for chunk in req.request_stream]
+        await req.reply(b"".join(chunks))
+
+    async def body():
+        a, b = make_pair(on_request_b=on_request)
+        outgoing, await_reply = await a.stream_request(5)
+        await outgoing.write(b"x")
+        await outgoing.write(b"y")
+        await outgoing.end()
+        reply = await await_reply
+        return reply
+
+    assert asyncio.run(asyncio.wait_for(body(), 2)) == b"xy"
+
+
+def test_duplex_roundtrip():
+    async def on_request(req):
+        outgoing = await req.create_response_stream()
+        async for chunk in req.request_stream:
+            await outgoing.write(chunk + b"!")
+        await outgoing.end()
+
+    async def body():
+        a, b = make_pair(on_request_b=on_request)
+        outgoing, incoming = await a.create_bidirectional_stream(5)
+        await outgoing.write(b"a")
+        await outgoing.write(b"b")
+        await outgoing.end()
+        return [chunk async for chunk in incoming]
+
+    assert asyncio.run(asyncio.wait_for(body(), 2)) == [b"a!", b"b!"]
+
+
+def test_backpressure_pause_resume_over_a_pair():
+    from bare_rpc.incoming_stream import HIGH_WATER_MARK
+
+    async def on_request(req):
+        out = await req.create_response_stream()
+        for i in range(HIGH_WATER_MARK + 2):
+            await out.write(bytes([i]))
+        await out.end()
+
+    async def body():
+        a, b = make_pair(on_request_b=on_request)
+        stream = await a.request_with_response_stream(5)
+        # do not consume yet; let the writer fill our buffer past the high-water mark
+        for _ in range(50):
+            await asyncio.sleep(0)
+        received = [chunk async for chunk in stream]
+        return received
+
+    received = asyncio.run(asyncio.wait_for(body(), 2))
+    assert len(received) == HIGH_WATER_MARK + 2
