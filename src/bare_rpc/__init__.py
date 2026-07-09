@@ -2,6 +2,7 @@
 
 from .constants import StreamFlag, Type
 from .incoming import IncomingEvent, IncomingRequest
+from .incoming_stream import IncomingStream
 from .messages import (
     DecodedMessage,
     RequestMessage,
@@ -22,6 +23,7 @@ __all__ = [
     "DecodedMessage",
     "IncomingEvent",
     "IncomingRequest",
+    "IncomingStream",
     "OutgoingStream",
     "RPC",
     "RPCRemoteError",
