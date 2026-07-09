@@ -224,10 +224,12 @@ class RPC:
         self._spawn(self._run_stream_request(req))
 
     async def _run_stream_request(self, req):
-        # Unlike _run_request, a throwing stream-open handler is NOT auto-rejected
-        # (that would emit a spurious stream==0 error frame); the generated code
-        # is responsible for replying / destroying its streams. Matches Swift's
-        # try? on handleRequestStreamOpen.
+        # Unlike _run_request, a throwing stream-open handler is NOT auto-rejected:
+        # by the time we're here the id has already been promoted to a stream (its
+        # OPEN ack is already on the wire), so a reject would send a spurious
+        # second/duplicate response on a stream id, not a clean error for request
+        # id 0. The generated code is responsible for replying / destroying its
+        # streams. Matches Swift's try? on handleRequestStreamOpen.
         try:
             await _maybe_await(self._on_request(req))
         except Exception:
@@ -236,6 +238,9 @@ class RPC:
     def _on_stream(self, message):
         flags = message.flags
         if flags & StreamFlag.OPEN:
+            # STREAM|OPEN is a protocol ack, not consumed by this runtime (kept
+            # for wire parity / future cross-runtime interop); intentionally a
+            # no-op on receipt, not dead code.
             return
         if flags & StreamFlag.CLOSE:
             stream = self._incoming_streams.get(message.id)

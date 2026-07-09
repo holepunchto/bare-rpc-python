@@ -39,6 +39,8 @@ class OutgoingStream:
         if self._ended:
             return
         self._ended = True
+        # An errorless destroy() sends a bare CLOSE, which the peer reader treats
+        # as a clean end (StopAsyncIteration), not an abrupt error-close.
         if error is not None:
             self._rpc._send(
                 encode_stream(
