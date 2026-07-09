@@ -15,7 +15,7 @@ def test_incoming_event_has_no_reply():
 def test_incoming_request_reply():
     sent = []
 
-    async def send(frame):
+    def send(frame):
         sent.append(frame)
 
     async def body():
@@ -33,7 +33,7 @@ def test_incoming_request_reply():
 def test_incoming_request_reject_from_exception():
     sent = []
 
-    async def send(frame):
+    def send(frame):
         sent.append(frame)
 
     class Boom(Exception):
@@ -52,7 +52,7 @@ def test_incoming_request_reject_from_exception():
 def test_incoming_request_reject_from_rpc_remote_error():
     sent = []
 
-    async def send(frame):
+    def send(frame):
         sent.append(frame)
 
     async def body():
@@ -66,7 +66,7 @@ def test_incoming_request_reject_from_rpc_remote_error():
 def test_incoming_request_replies_once():
     sent = []
 
-    async def send(frame):
+    def send(frame):
         sent.append(frame)
 
     async def body():
