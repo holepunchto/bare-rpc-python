@@ -15,12 +15,14 @@ from .messages import (
     encode_response,
     encode_stream,
 )
+from .outgoing_stream import OutgoingStream
 from .rpc import RPC
 
 __all__ = [
     "DecodedMessage",
     "IncomingEvent",
     "IncomingRequest",
+    "OutgoingStream",
     "RPC",
     "RPCRemoteError",
     "RequestMessage",
