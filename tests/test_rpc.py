@@ -231,6 +231,96 @@ def test_event_returns_before_its_send_completes():
     assert result.index("event-returned") < result.index("send-done")
 
 
+def test_frames_are_sent_in_call_order():
+    sent = []
+
+    async def send(frame):
+        sent.append(frame)
+
+    async def body():
+        r = RPC(send)
+        await r.event(1, b"a")
+        task = asyncio.ensure_future(r.request(2, b"b"))
+        for _ in range(20):
+            if len(sent) >= 2:
+                break
+            await asyncio.sleep(0)
+        task.cancel()
+        return sent
+
+    sent = asyncio.run(body())
+    assert rpc.decode_frame(sent[0]).command == 1  # event enqueued first
+    assert rpc.decode_frame(sent[1]).command == 2  # request enqueued second
+
+
+def test_close_stops_the_writer_and_drops_later_sends():
+    sent = []
+
+    async def send(frame):
+        sent.append(frame)
+
+    async def body():
+        r = RPC(send)
+        assert r._writer_task is None
+        await r.event(1, b"a")
+        assert r._writer_task is not None  # writer starts on first send
+        for _ in range(20):
+            if sent:
+                break
+            await asyncio.sleep(0)
+        r.close()
+        await r.event(2, b"b")  # dropped (closed)
+        for _ in range(20):
+            await asyncio.sleep(0)
+        return sent, r._writer_task
+
+    sent, writer = asyncio.run(body())
+    assert len(sent) == 1  # only the pre-close event was sent
+    assert writer.done()  # writer exited after close
+
+
+def test_request_after_close_raises_not_hangs():
+    async def send(_frame):
+        pass
+
+    async def body():
+        r = RPC(send)
+        r.close()
+        raised = None
+        try:
+            await asyncio.wait_for(r.request(1, b"x"), 0.5)
+        except RuntimeError as exc:
+            raised = exc
+        except asyncio.TimeoutError:
+            raised = "hung"
+        return raised
+
+    raised = asyncio.run(body())
+    assert isinstance(raised, RuntimeError)
+
+
+def test_close_rejects_in_flight_request():
+    async def send(_frame):
+        pass
+
+    async def body():
+        r = RPC(send)
+        task = asyncio.ensure_future(r.request(1, b"x"))
+        await asyncio.sleep(0)  # let it register + enqueue
+        r.close()
+        raised = None
+        try:
+            await asyncio.wait_for(task, 0.5)
+        except RuntimeError as exc:
+            raised = exc
+        except asyncio.TimeoutError:
+            raised = "hung"
+        return raised
+
+    raised = asyncio.run(body())
+    assert isinstance(raised, RuntimeError)
+
+
 def test_event_handler_error_poisons_the_connection():
     async def body():
         errors = []

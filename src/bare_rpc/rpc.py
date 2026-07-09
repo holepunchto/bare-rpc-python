@@ -70,9 +70,23 @@ class RPC:
                     self._fail(exc)
                     return
 
+    def close(self):
+        if self._failed is not None or self._closed:
+            return
+        self._closed = True
+        self._outbound.clear()
+        self._outbound_ready.set()
+        error = RuntimeError("RPC is closed")
+        for future in self._pending.values():
+            if not future.done():
+                future.set_exception(error)
+        self._pending.clear()
+
     async def request(self, command, data=None):
         if self._failed is not None:
             raise self._failed
+        if self._closed:
+            raise RuntimeError("RPC is closed")
         self._id += 1
         request_id = self._id
         future = asyncio.get_running_loop().create_future()
@@ -81,7 +95,7 @@ class RPC:
         return await future
 
     async def event(self, command, data=None):
-        if self._failed is not None:
+        if self._failed is not None or self._closed:
             return
         self._send(encode_event(command, data=data))
 
