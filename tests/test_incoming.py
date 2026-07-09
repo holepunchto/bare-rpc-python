@@ -5,6 +5,14 @@ from bare_rpc import ResponseMessage, RPCRemoteError
 from bare_rpc.incoming import IncomingEvent, IncomingRequest
 
 
+class FakeRPC:
+    def __init__(self):
+        self.sent = []
+
+    def _send(self, frame):
+        self.sent.append(frame)
+
+
 def test_incoming_event_has_no_reply():
     ev = IncomingEvent(9, b"data")
     assert ev.command == 9
@@ -13,17 +21,14 @@ def test_incoming_event_has_no_reply():
 
 
 def test_incoming_request_reply():
-    sent = []
-
-    def send(frame):
-        sent.append(frame)
+    fake = FakeRPC()
 
     async def body():
-        req = IncomingRequest(send, 1, 5, b"hi")
+        req = IncomingRequest(fake, 1, 5, b"hi")
         await req.reply(b"pong")
 
     asyncio.run(body())
-    msg = rpc.decode_frame(sent[0])
+    msg = rpc.decode_frame(fake.sent[0])
     assert isinstance(msg, ResponseMessage)
     assert msg.id == 1
     assert msg.data == b"pong"
@@ -31,49 +36,40 @@ def test_incoming_request_reply():
 
 
 def test_incoming_request_reject_from_exception():
-    sent = []
-
-    def send(frame):
-        sent.append(frame)
+    fake = FakeRPC()
 
     class Boom(Exception):
         code = "BAD"
         errno = 400
 
     async def body():
-        req = IncomingRequest(send, 2, 5, None)
+        req = IncomingRequest(fake, 2, 5, None)
         await req.reject(Boom("boom"))
 
     asyncio.run(body())
-    msg = rpc.decode_frame(sent[0])
+    msg = rpc.decode_frame(fake.sent[0])
     assert msg.error == RPCRemoteError("boom", "BAD", 400)
 
 
 def test_incoming_request_reject_from_rpc_remote_error():
-    sent = []
-
-    def send(frame):
-        sent.append(frame)
+    fake = FakeRPC()
 
     async def body():
-        req = IncomingRequest(send, 3, 5, None)
+        req = IncomingRequest(fake, 3, 5, None)
         await req.reject(RPCRemoteError("nope", "NO", 7))
 
     asyncio.run(body())
-    assert rpc.decode_frame(sent[0]).error == RPCRemoteError("nope", "NO", 7)
+    assert rpc.decode_frame(fake.sent[0]).error == RPCRemoteError("nope", "NO", 7)
 
 
 def test_incoming_request_replies_once():
-    sent = []
-
-    def send(frame):
-        sent.append(frame)
+    fake = FakeRPC()
 
     async def body():
-        req = IncomingRequest(send, 4, 0, None)
+        req = IncomingRequest(fake, 4, 0, None)
         await req.reply(b"a")
         await req.reply(b"b")  # no-op
         await req.reject(Exception("x"))  # no-op
 
     asyncio.run(body())
-    assert len(sent) == 1
+    assert len(fake.sent) == 1
