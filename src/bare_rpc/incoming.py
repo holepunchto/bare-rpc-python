@@ -19,7 +19,7 @@ class IncomingRequest:
         if self._replied:
             return
         self._replied = True
-        await self._send(encode_response(self.id, data=data))
+        self._send(encode_response(self.id, data=data))
 
     async def reject(self, error):
         if self._replied:
@@ -31,4 +31,4 @@ class IncomingRequest:
             message = str(error)
             code = getattr(error, "code", "") or ""
             errno = getattr(error, "errno", 0) or 0
-        await self._send(encode_error_response(self.id, message, code, errno))
+        self._send(encode_error_response(self.id, message, code, errno))

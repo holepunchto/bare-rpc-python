@@ -208,6 +208,29 @@ def test_request_with_no_handler_is_unanswered():
     assert asyncio.run(body()) == "unanswered"
 
 
+def test_event_returns_before_its_send_completes():
+    order = []
+
+    async def send(frame):
+        order.append("send-start")
+        await asyncio.sleep(0)
+        order.append("send-done")
+
+    async def body():
+        r = RPC(send)
+        await r.event(5, b"x")
+        order.append("event-returned")
+        for _ in range(20):
+            if "send-done" in order:
+                break
+            await asyncio.sleep(0)
+        return order
+
+    result = asyncio.run(body())
+    assert "send-done" in result
+    assert result.index("event-returned") < result.index("send-done")
+
+
 def test_event_handler_error_poisons_the_connection():
     async def body():
         errors = []

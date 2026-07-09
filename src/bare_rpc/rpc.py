@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+from collections import deque
 
 from .incoming import IncomingEvent, IncomingRequest
 from .messages import (
@@ -41,9 +42,33 @@ class RPC:
         self._buffer = bytearray()
         self._tasks = set()
         self._failed = None
+        self._outbound = deque()
+        self._outbound_ready = asyncio.Event()
+        self._writer_task = None
+        self._closed = False
 
-    async def _send(self, frame):
-        await _maybe_await(self._send_cb(frame))
+    def _send(self, frame):
+        if self._failed is not None or self._closed:
+            return
+        self._outbound.append(frame)
+        self._outbound_ready.set()
+        self._ensure_writer()
+
+    def _ensure_writer(self):
+        if self._writer_task is None:
+            self._writer_task = asyncio.create_task(self._writer())
+
+    async def _writer(self):
+        while self._failed is None and not self._closed:
+            await self._outbound_ready.wait()
+            self._outbound_ready.clear()
+            while self._outbound:
+                frame = self._outbound.popleft()
+                try:
+                    await _maybe_await(self._send_cb(frame))
+                except Exception as exc:
+                    self._fail(exc)
+                    return
 
     async def request(self, command, data=None):
         if self._failed is not None:
@@ -52,22 +77,13 @@ class RPC:
         request_id = self._id
         future = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
-        try:
-            await self._send(encode_request(request_id, command, data=data))
-        except Exception as exc:
-            self._pending.pop(request_id, None)
-            self._fail(exc)
-            raise
+        self._send(encode_request(request_id, command, data=data))
         return await future
 
     async def event(self, command, data=None):
         if self._failed is not None:
             return
-        try:
-            await self._send(encode_event(command, data=data))
-        except Exception as exc:
-            self._fail(exc)
-            raise
+        self._send(encode_event(command, data=data))
 
     async def receive(self, data):
         if self._failed is not None:
@@ -144,6 +160,8 @@ class RPC:
             return
         self._failed = error
         self._buffer.clear()
+        self._outbound.clear()
+        self._outbound_ready.set()
         for future in self._pending.values():
             if not future.done():
                 future.set_exception(error)
