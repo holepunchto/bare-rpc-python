@@ -1,0 +1,232 @@
+[
+  {
+    "note": "request unary with payload",
+    "descriptor": {
+      "type": 1,
+      "id": 1,
+      "command": 0,
+      "stream": 0,
+      "data": "6869"
+    }
+  },
+  {
+    "note": "request unary null payload",
+    "descriptor": {
+      "type": 1,
+      "id": 1,
+      "command": 0,
+      "stream": 0,
+      "data": null
+    }
+  },
+  {
+    "note": "request unary zero-length buffer (decodes to empty buffer, not null)",
+    "descriptor": {
+      "type": 1,
+      "id": 1,
+      "command": 0,
+      "stream": 0,
+      "data": ""
+    }
+  },
+  {
+    "note": "event (id 0) with payload",
+    "descriptor": {
+      "type": 1,
+      "id": 0,
+      "command": 3,
+      "stream": 0,
+      "data": "6869"
+    }
+  },
+  {
+    "note": "event (id 0) null payload",
+    "descriptor": {
+      "type": 1,
+      "id": 0,
+      "command": 3,
+      "stream": 0,
+      "data": null
+    }
+  },
+  {
+    "note": "request stream-open (stream=0x1, no dataLen field)",
+    "descriptor": {
+      "type": 1,
+      "id": 2,
+      "command": 1,
+      "stream": 1,
+      "data": null
+    }
+  },
+  {
+    "note": "response success with payload",
+    "descriptor": {
+      "type": 2,
+      "id": 1,
+      "error": null,
+      "stream": 0,
+      "data": "6869"
+    }
+  },
+  {
+    "note": "response success null payload",
+    "descriptor": {
+      "type": 2,
+      "id": 1,
+      "error": null,
+      "stream": 0,
+      "data": null
+    }
+  },
+  {
+    "note": "response stream-open (stream=0x1)",
+    "descriptor": {
+      "type": 2,
+      "id": 2,
+      "error": null,
+      "stream": 1,
+      "data": null
+    }
+  },
+  {
+    "note": "stream request data",
+    "descriptor": {
+      "type": 3,
+      "id": 2,
+      "stream": 272,
+      "error": null,
+      "data": "6869"
+    }
+  },
+  {
+    "note": "stream response data",
+    "descriptor": {
+      "type": 3,
+      "id": 2,
+      "stream": 528,
+      "error": null,
+      "data": "6869"
+    }
+  },
+  {
+    "note": "stream request open",
+    "descriptor": {
+      "type": 3,
+      "id": 2,
+      "stream": 257,
+      "error": null,
+      "data": null
+    }
+  },
+  {
+    "note": "stream response open",
+    "descriptor": {
+      "type": 3,
+      "id": 2,
+      "stream": 513,
+      "error": null,
+      "data": null
+    }
+  },
+  {
+    "note": "stream request end",
+    "descriptor": {
+      "type": 3,
+      "id": 2,
+      "stream": 288,
+      "error": null,
+      "data": null
+    }
+  },
+  {
+    "note": "stream response end",
+    "descriptor": {
+      "type": 3,
+      "id": 2,
+      "stream": 544,
+      "error": null,
+      "data": null
+    }
+  },
+  {
+    "note": "stream request close",
+    "descriptor": {
+      "type": 3,
+      "id": 2,
+      "stream": 258,
+      "error": null,
+      "data": null
+    }
+  },
+  {
+    "note": "stream request pause",
+    "descriptor": {
+      "type": 3,
+      "id": 2,
+      "stream": 260,
+      "error": null,
+      "data": null
+    }
+  },
+  {
+    "note": "stream request resume",
+    "descriptor": {
+      "type": 3,
+      "id": 2,
+      "stream": 264,
+      "error": null,
+      "data": null
+    }
+  },
+  {
+    "note": "stream request destroy",
+    "descriptor": {
+      "type": 3,
+      "id": 2,
+      "stream": 320,
+      "error": null,
+      "data": null
+    }
+  },
+  {
+    "note": "stream response close",
+    "descriptor": {
+      "type": 3,
+      "id": 2,
+      "stream": 514,
+      "error": null,
+      "data": null
+    }
+  },
+  {
+    "note": "stream response pause",
+    "descriptor": {
+      "type": 3,
+      "id": 2,
+      "stream": 516,
+      "error": null,
+      "data": null
+    }
+  },
+  {
+    "note": "stream response resume",
+    "descriptor": {
+      "type": 3,
+      "id": 2,
+      "stream": 520,
+      "error": null,
+      "data": null
+    }
+  },
+  {
+    "note": "stream response destroy",
+    "descriptor": {
+      "type": 3,
+      "id": 2,
+      "stream": 576,
+      "error": null,
+      "data": null
+    }
+  }
+]

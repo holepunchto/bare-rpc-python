@@ -1,0 +1,142 @@
+[
+  {
+    "note": "response error basic",
+    "descriptor": {
+      "type": 2,
+      "id": 1,
+      "error": {
+        "message": "boom",
+        "code": "BAD",
+        "errno": 400
+      },
+      "stream": 0,
+      "data": null
+    }
+  },
+  {
+    "note": "response error empty message and code",
+    "descriptor": {
+      "type": 2,
+      "id": 1,
+      "error": {
+        "message": "",
+        "code": "",
+        "errno": 0
+      },
+      "stream": 0,
+      "data": null
+    }
+  },
+  {
+    "note": "response error negative errno",
+    "descriptor": {
+      "type": 2,
+      "id": 1,
+      "error": {
+        "message": "x",
+        "code": "C",
+        "errno": -400
+      },
+      "stream": 0,
+      "data": null
+    }
+  },
+  {
+    "note": "response error unicode message",
+    "descriptor": {
+      "type": 2,
+      "id": 1,
+      "error": {
+        "message": "nafta éè",
+        "code": "C",
+        "errno": 1
+      },
+      "stream": 0,
+      "data": null
+    }
+  },
+  {
+    "note": "response error null code encodes empty (regression)",
+    "descriptor": {
+      "type": 2,
+      "id": 1,
+      "error": {
+        "message": "m",
+        "code": "",
+        "errno": 1
+      },
+      "stream": 0,
+      "data": null
+    }
+  },
+  {
+    "note": "response error undefined code encodes empty (regression)",
+    "descriptor": {
+      "type": 2,
+      "id": 1,
+      "error": {
+        "message": "m",
+        "code": "",
+        "errno": 1
+      },
+      "stream": 0,
+      "data": null
+    }
+  },
+  {
+    "note": "stream request close+error",
+    "descriptor": {
+      "type": 3,
+      "id": 2,
+      "stream": 386,
+      "error": {
+        "message": "gone",
+        "code": "E",
+        "errno": 1
+      },
+      "data": null
+    }
+  },
+  {
+    "note": "stream response destroy+error",
+    "descriptor": {
+      "type": 3,
+      "id": 2,
+      "stream": 704,
+      "error": {
+        "message": "gone",
+        "code": "E",
+        "errno": 2
+      },
+      "data": null
+    }
+  },
+  {
+    "note": "stream response close+error",
+    "descriptor": {
+      "type": 3,
+      "id": 2,
+      "stream": 642,
+      "error": {
+        "message": "gone",
+        "code": "E",
+        "errno": 3
+      },
+      "data": null
+    }
+  },
+  {
+    "note": "stream request destroy+error",
+    "descriptor": {
+      "type": 3,
+      "id": 2,
+      "stream": 448,
+      "error": {
+        "message": "gone",
+        "code": "E",
+        "errno": 4
+      },
+      "data": null
+    }
+  }
+]
