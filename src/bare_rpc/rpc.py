@@ -144,7 +144,7 @@ class RPC:
         self._send(encode_event(command, data=data))
 
     async def receive(self, data):
-        if self._failed is not None:
+        if self._failed is not None or self._closed:
             return
         self._buffer += data
         while True:
@@ -306,7 +306,9 @@ class RPC:
         self._outbound_ready.set()
         self._reject_all(error)
         if self._on_error is not None:
-            self._on_error(error)
+            result = self._on_error(error)
+            if inspect.isawaitable(result):
+                self._spawn(_maybe_await(result))
 
     def _reject_all(self, error):
         for future in self._pending.values():
