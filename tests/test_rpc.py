@@ -352,3 +352,46 @@ def test_event_handler_error_poisons_the_connection():
     assert len(errors) == 1
     assert isinstance(raised, ValueError)
     assert str(raised) == "bad event"
+
+
+def test_receive_after_close_ignores_inbound_frames():
+    calls = []
+
+    async def on_request(req):
+        calls.append(req.command)
+        await req.reply(b"late")
+
+    async def body():
+        async def send(_frame):
+            pass
+
+        r = RPC(send, on_request=on_request)
+        r.close()
+        # A full request frame arriving after close must not be dispatched,
+        # consistent with request()/event() refusing once closed.
+        await r.receive(rpc.encode_request(1, 5, data=b"x"))
+        for _ in range(3):
+            await asyncio.sleep(0)
+        return calls
+
+    assert asyncio.run(body()) == []
+
+
+def test_async_on_error_is_awaited():
+    ran = []
+
+    async def on_error(err):
+        ran.append(err)
+
+    async def body():
+        async def send(_frame):
+            pass
+
+        # max_frame_size 8 but the frame declares length 9 -> _fail -> on_error.
+        r = RPC(send, on_error=on_error, max_frame_size=8)
+        await r.receive((9).to_bytes(4, "little") + b"123456789")
+        for _ in range(3):
+            await asyncio.sleep(0)
+        return ran
+
+    assert len(asyncio.run(body())) == 1
