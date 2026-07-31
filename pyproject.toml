@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "bare-rpc-python"
+name = "bare-rpc"
 version = "0.0.1"
 description = "Pure-Python port of the bare-rpc message and frame wire codec"
 readme = "README.md"
