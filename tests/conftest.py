@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 # Conformance vectors vendored from holepunchto/hrpc-test @
-# a0fef8ed32d22f48e476505223ccfddd8f481c89 (see tests/fixtures/). Re-vendor from
+# 674351f46a6ca7b4a88469847a901f257d6be85a (see tests/fixtures/). Re-vendor from
 # that repo's fixtures/ when updating - keeps the suite hermetic (no network).
 _FIXTURES = Path(__file__).parent / "fixtures"
 DATA_FAMILIES = ["envelope", "error", "boundary", "dispatch"]
