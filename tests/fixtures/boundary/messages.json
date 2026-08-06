@@ -6,7 +6,7 @@
       "id": 252,
       "command": 0,
       "stream": 0,
-      "data": null
+      "data": ""
     }
   },
   {
@@ -16,7 +16,7 @@
       "id": 253,
       "command": 0,
       "stream": 0,
-      "data": null
+      "data": ""
     }
   },
   {
@@ -26,7 +26,17 @@
       "id": 65536,
       "command": 0,
       "stream": 0,
-      "data": null
+      "data": ""
+    }
+  },
+  {
+    "note": "id 4294967296 (2^32, varint widens to 9 bytes / uint64 tag 0xff)",
+    "descriptor": {
+      "type": 1,
+      "id": 4294967296,
+      "command": 0,
+      "stream": 0,
+      "data": ""
     }
   },
   {
@@ -36,7 +46,7 @@
       "id": 1,
       "command": 253,
       "stream": 0,
-      "data": null
+      "data": ""
     }
   },
   {

@@ -4,12 +4,12 @@
     "descriptor": {
       "type": 2,
       "id": 1,
+      "stream": 0,
       "error": {
         "message": "boom",
         "code": "BAD",
         "errno": 400
       },
-      "stream": 0,
       "data": null
     }
   },
@@ -18,12 +18,12 @@
     "descriptor": {
       "type": 2,
       "id": 1,
+      "stream": 0,
       "error": {
         "message": "",
         "code": "",
         "errno": 0
       },
-      "stream": 0,
       "data": null
     }
   },
@@ -32,12 +32,12 @@
     "descriptor": {
       "type": 2,
       "id": 1,
+      "stream": 0,
       "error": {
         "message": "x",
         "code": "C",
         "errno": -400
       },
-      "stream": 0,
       "data": null
     }
   },
@@ -46,12 +46,12 @@
     "descriptor": {
       "type": 2,
       "id": 1,
+      "stream": 0,
       "error": {
         "message": "nafta éè",
         "code": "C",
         "errno": 1
       },
-      "stream": 0,
       "data": null
     }
   },
@@ -60,12 +60,12 @@
     "descriptor": {
       "type": 2,
       "id": 1,
+      "stream": 0,
       "error": {
         "message": "m",
         "code": "",
         "errno": 1
       },
-      "stream": 0,
       "data": null
     }
   },
@@ -74,12 +74,12 @@
     "descriptor": {
       "type": 2,
       "id": 1,
+      "stream": 0,
       "error": {
         "message": "m",
         "code": "",
         "errno": 1
       },
-      "stream": 0,
       "data": null
     }
   },
