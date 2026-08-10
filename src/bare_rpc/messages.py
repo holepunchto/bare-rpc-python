@@ -5,6 +5,13 @@ import compact_encoding as cenc
 from .constants import StreamFlag, Type
 
 
+class UnknownMessageTypeError(Exception):
+    """A frame parsed cleanly but named a type this format does not define.
+
+    WIRE.md's "Rejecting frames": signalled, never skipped.
+    """
+
+
 @dataclass(frozen=True)
 class RPCRemoteError(Exception):
     message: str
@@ -198,4 +205,4 @@ def decode_frame(frame):
         return _decode_response(state)
     if type_ == Type.STREAM:
         return _decode_stream(state)
-    return None
+    raise UnknownMessageTypeError(f"unknown message type {type_}")

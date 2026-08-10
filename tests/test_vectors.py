@@ -116,13 +116,12 @@ def test_encode_all(fixtures, family):
 
 
 def test_negative_frames(fixtures):
+    """Both classes WIRE.md says must be rejected - malformed, and well-formed
+    with an unrecognized type - are signalled rather than skipped."""
     for entry in fixtures["negative"]["frames"]:
         frame = bytes.fromhex(entry["hex"])
-        try:
-            result = rpc.decode_frame(frame)
-        except cenc.OutOfBounds:
-            continue  # truncated / under-length: acceptable failure
-        assert result is None, f"negative frame decoded to a message: {entry['reason']}"
+        with pytest.raises((cenc.OutOfBounds, rpc.UnknownMessageTypeError)):
+            rpc.decode_frame(frame)
 
 
 def test_sequence_resplits_by_length_prefix(fixtures):

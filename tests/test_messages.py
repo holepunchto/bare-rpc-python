@@ -48,9 +48,10 @@ def test_decode_request_stream_open_has_no_data():
     assert msg.data is None
 
 
-def test_decode_unknown_type_returns_none():
+def test_decode_unknown_type_raises():
     # length 2, type 99
-    assert rpc.decode_frame(bytes.fromhex("020000006300")) is None
+    with pytest.raises(rpc.UnknownMessageTypeError):
+        rpc.decode_frame(bytes.fromhex("020000006300"))
 
 
 def test_decode_truncated_frame_raises():
