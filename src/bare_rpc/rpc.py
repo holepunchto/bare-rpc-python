@@ -166,8 +166,6 @@ class RPC:
             self._dispatch(message)
 
     def _dispatch(self, message):
-        if message is None:
-            return
         if isinstance(message, RequestMessage):
             if message.stream & StreamFlag.OPEN:
                 self._on_request_stream_open(message)
