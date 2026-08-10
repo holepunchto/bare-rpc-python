@@ -1,5 +1,5 @@
 import pytest
-from hrpc_test import FAMILIES, load_family, load_negative
+from hrpc_test import FAMILIES, load_family, load_negative, load_sequence
 
 # Conformance vectors come from the hrpc-test package, pinned in the dev extra,
 # rather than a copy in this repo - a vendored set silently falls behind, which
@@ -12,4 +12,5 @@ DATA_FAMILIES = FAMILIES
 def fixtures():
     out = {family: load_family(family) for family in DATA_FAMILIES}
     out["negative"] = {"frames": load_negative()}
+    out["sequence"] = load_sequence()
     return out

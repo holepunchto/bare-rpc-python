@@ -123,3 +123,21 @@ def test_negative_frames(fixtures):
         except cenc.OutOfBounds:
             continue  # truncated / under-length: acceptable failure
         assert result is None, f"negative frame decoded to a message: {entry['reason']}"
+
+
+def test_sequence_resplits_by_length_prefix(fixtures):
+    """The sequence family is one byte stream of several frames - a transport has
+    to find the boundaries from the uint32 length prefix alone."""
+    sequence = fixtures["sequence"]
+    buf = bytes.fromhex(sequence["concatenated"])
+
+    seen = 0
+    offset = 0
+    while offset < len(buf):
+        body = int.from_bytes(buf[offset : offset + 4], "little")
+        end = offset + 4 + body
+        assert rpc.decode_frame(buf[offset:end]) is not None, f"frame {seen}"
+        offset = end
+        seen += 1
+
+    assert seen == sequence["count"]
