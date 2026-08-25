@@ -16,7 +16,7 @@ dependencies = ["compact-encoding>=0.0.1"]
 dev = [
   "pytest>=8",
   "ruff>=0.6",
-  "hrpc-test @ git+https://github.com/holepunchto/hrpc-test@v0.2.0",
+  "hrpc-test @ git+https://github.com/holepunchto/hrpc-test@v0.2.2",
 ]
 
 # The conformance vectors are pinned by tag from git

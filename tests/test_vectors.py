@@ -1,11 +1,10 @@
 import compact_encoding as cenc
 import pytest
+from hrpc_test import FAMILIES
 
 import bare_rpc as rpc
 from bare_rpc import RequestMessage, ResponseMessage, RPCRemoteError, StreamMessage
 from bare_rpc.constants import StreamFlag, Type
-
-DATA_FAMILIES = ["envelope", "error", "boundary", "dispatch"]
 
 
 def _descriptor_data(descriptor):
@@ -97,7 +96,7 @@ def _assert_decoded_matches(msg, descriptor):
         raise AssertionError(f"unknown descriptor type {t}")
 
 
-@pytest.mark.parametrize("family", DATA_FAMILIES)
+@pytest.mark.parametrize("family", FAMILIES)
 def test_decode_all(fixtures, family):
     frames = fixtures[family]["frames"]
     messages = fixtures[family]["messages"]
@@ -107,7 +106,7 @@ def test_decode_all(fixtures, family):
         _assert_decoded_matches(msg, entry["descriptor"])
 
 
-@pytest.mark.parametrize("family", DATA_FAMILIES)
+@pytest.mark.parametrize("family", FAMILIES)
 def test_encode_all(fixtures, family):
     frames = fixtures[family]["frames"]
     messages = fixtures[family]["messages"]
