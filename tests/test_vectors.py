@@ -4,7 +4,7 @@ from hrpc_test import FAMILIES
 
 import bare_rpc as rpc
 from bare_rpc import RequestMessage, ResponseMessage, RPCRemoteError, StreamMessage
-from bare_rpc.constants import StreamFlag, Type
+from bare_rpc.constants import Type
 
 
 def _descriptor_data(descriptor):
@@ -14,10 +14,13 @@ def _descriptor_data(descriptor):
 
 
 def _expected_decoded_data(descriptor):
-    """Decoded value for a data-bearing frame: null/'' -> b'', hex -> bytes."""
+    """The descriptor pins the payload exactly, so compare against it rather than
+    re-deriving the rule: null where the wire carries no dataLen at all, and an
+    empty string where it carries a zero-length one, which decodes to empty
+    bytes rather than None."""
     d = descriptor.get("data")
-    if d is None or d == "":
-        return b""
+    if d is None:
+        return None
     return bytes.fromhex(d)
 
 
@@ -63,8 +66,7 @@ def _assert_decoded_matches(msg, descriptor):
         assert msg.id == descriptor["id"]
         assert msg.command == descriptor["command"]
         assert msg.stream == descriptor["stream"]
-        expected = _expected_decoded_data(descriptor) if msg.stream == 0 else None
-        assert msg.data == expected
+        assert msg.data == _expected_decoded_data(descriptor)
     elif t == Type.RESPONSE:
         assert isinstance(msg, ResponseMessage)
         assert msg.id == descriptor["id"]
@@ -76,22 +78,21 @@ def _assert_decoded_matches(msg, descriptor):
             )
         else:
             assert msg.error is None
-            expected = _expected_decoded_data(descriptor) if msg.stream == 0 else None
-            assert msg.data == expected
+            assert msg.data == _expected_decoded_data(descriptor)
     elif t == Type.STREAM:
         assert isinstance(msg, StreamMessage)
         assert msg.id == descriptor["id"]
         flags = descriptor["stream"]
         assert msg.flags == flags
         err = descriptor.get("error")
-        if flags & StreamFlag.ERROR:
+        if err is not None:
             assert msg.error == RPCRemoteError(
                 err["message"], err["code"], err["errno"]
             )
-        elif flags & StreamFlag.DATA:
-            assert msg.data == _expected_decoded_data(descriptor)
+            assert msg.data is None
         else:
-            assert msg.data is None and msg.error is None
+            assert msg.error is None
+            assert msg.data == _expected_decoded_data(descriptor)
     else:
         raise AssertionError(f"unknown descriptor type {t}")
 
