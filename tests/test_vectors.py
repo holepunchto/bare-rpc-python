@@ -124,6 +124,12 @@ def test_negative_frames(fixtures):
             rpc.decode_frame(frame)
 
 
+def test_decode_only_frames(fixtures):
+    for entry in fixtures["decode-only"]["frames"]:
+        msg = rpc.decode_frame(bytes.fromhex(entry["hex"]))
+        _assert_decoded_matches(msg, entry["descriptor"])
+
+
 def test_sequence_resplits_by_length_prefix(fixtures):
     """The sequence family is one byte stream of several frames - a transport has
     to find the boundaries from the uint32 length prefix alone."""
