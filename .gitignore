@@ -7,5 +7,5 @@ build/
 dist/
 .venv/
 .superpowers/
-tests/.hrpc-fixtures/
+tests/.bare-rpc-test/
 docs/superpowers/
