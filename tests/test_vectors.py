@@ -1,10 +1,10 @@
 import compact_encoding as cenc
 import pytest
-from hrpc_test import FAMILIES
 
 import bare_rpc as rpc
 from bare_rpc import RequestMessage, ResponseMessage, RPCRemoteError, StreamMessage
 from bare_rpc.constants import Type
+from wire_vectors import FAMILIES
 
 
 def _descriptor_data(descriptor):
