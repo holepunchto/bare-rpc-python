@@ -21,8 +21,6 @@ frame = rpc.encode_request(1, 42, data=b"hi")  # -> bytes
 msg = rpc.decode_frame(frame)  # -> RequestMessage(id=1, command=42, ...)
 ```
 
-Encoders: `encode_request`, `encode_response`, `encode_error_response`, `encode_event`, `encode_stream`. `decode_frame` returns a `RequestMessage`, `ResponseMessage`, or `StreamMessage`. `Type` and `StreamFlag` are the wire enums.
-
 ## RPC runtime
 
 `RPC` is transport-agnostic: give it a `send` callback for outgoing frames and feed it inbound bytes with `receive`. Wire those to an asyncio stream, a websocket, or an in-memory pipe.
@@ -43,8 +41,6 @@ await server.receive(incoming_bytes)  # feed inbound frames in
 result = await client.request(command=5, data=b"ping")  # -> b"pong"
 await client.event(command=3, data=b"note")  # fire-and-forget, no response
 ```
-
-Constructor: `RPC(send, *, on_request=None, on_event=None, on_error=None, max_frame_size=...)`. `on_request` receives an `IncomingRequest` (`.command`, `.data`, `await .reply(data)`, `await .reject(error)`); `on_event` receives an `IncomingEvent`. `close()` rejects all in-flight requests.
 
 ## Command routing
 
@@ -68,11 +64,9 @@ server = rpc.RPC(
 )
 ```
 
-A request handler returns the data to reply with, unless it has already replied or opened a response stream, and raising rejects the request. Handlers may be plain functions or coroutines. Requests for a command without a handler are rejected with code `ERR_UNKNOWN_COMMAND`, and events for one are dropped.
-
 ## Streams and backpressure
 
-All three streaming shapes are implemented, with cork/uncork backpressure. An `OutgoingStream` has `await write(data)`, `await end()`, and `await destroy(error=None)`; an `IncomingStream` is async-iterable.
+All three streaming shapes are implemented, with backpressure.
 
 Response stream (server streams back, client reads):
 
@@ -114,9 +108,9 @@ async for chunk in incoming:
     ...
 ```
 
-## Errors
+## API
 
-A rejected request raises `RPCRemoteError` (`.message`, `.code`, `.errno`) on the caller. Pass one to `await req.reject(...)` to carry a specific code across the wire; any other exception is rejected with its string message.
+The API reference is in the docstrings, for example `help(bare_rpc.RPC)`.
 
 ## License
 
