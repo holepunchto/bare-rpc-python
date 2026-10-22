@@ -21,7 +21,8 @@ DEFAULT_MAX_FRAME_SIZE = 16 * 1024 * 1024
 
 async def _maybe_await(result):
     if inspect.isawaitable(result):
-        await result
+        return await result
+    return result
 
 
 class RPC:

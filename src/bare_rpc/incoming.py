@@ -37,7 +37,6 @@ class IncomingRequest:
         self._rpc._send(encode_error_response(self.id, message, code, errno))
 
     async def create_response_stream(self):
-        self._replied = True
         outgoing = OutgoingStream(self._rpc, self.id, StreamFlag.RESPONSE)
         self._rpc._outgoing_streams[self.id] = outgoing
         self._rpc._send(encode_response(self.id, stream=StreamFlag.OPEN))

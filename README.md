@@ -48,14 +48,14 @@ Constructor: `RPC(send, *, on_request=None, on_event=None, on_error=None, max_fr
 
 ## Command routing
 
-`CommandRouter` sends each request and event to the handler registered for its command, like `CommandRouter` in the JavaScript, Swift, and Kotlin implementations. Pass its `dispatch_request` and `dispatch_event` to `RPC`:
+`CommandRouter` sends each request and event to the handler registered for its command. Pass its `dispatch_request` and `dispatch_event` to `RPC`:
 
 ```python
 router = rpc.CommandRouter()
 
 
 async def ping(req):
-    return b"pong"  # Replied with
+    return b"pong"
 
 
 router.on_request(5, ping)
