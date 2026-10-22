@@ -6,14 +6,22 @@ from .constants import StreamFlag, Type
 
 
 class UnknownMessageTypeError(Exception):
-    """A frame parsed cleanly but named a type this format does not define.
+    """Raised by ``decode_frame`` for a type tag this format does not define.
 
-    WIRE.md's "Rejecting frames": signalled, never skipped.
+    Such a frame is rejected, never skipped.
     """
 
 
 @dataclass(frozen=True)
 class RPCRemoteError(Exception):
+    """An error carried in an error response or a stream frame.
+
+    Attributes:
+        message: Human-readable description.
+        code: Machine-readable error code.
+        errno: Numeric error code.
+    """
+
     message: str
     code: str
     errno: int
@@ -21,6 +29,15 @@ class RPCRemoteError(Exception):
 
 @dataclass(frozen=True)
 class RequestMessage:
+    """A decoded request or event frame.
+
+    Attributes:
+        id: Request id, or 0 for an event.
+        command: Command number.
+        stream: ``StreamFlag`` bits, 0 for a request without a stream.
+        data: Payload, or None when the frame has none.
+    """
+
     id: int
     command: int
     stream: int
@@ -29,6 +46,15 @@ class RequestMessage:
 
 @dataclass(frozen=True)
 class ResponseMessage:
+    """A decoded response frame.
+
+    Attributes:
+        id: Id of the request this answers.
+        stream: ``StreamFlag`` bits, 0 for a response without a stream.
+        data: Payload, or None when the frame has none.
+        error: The error for an error response, otherwise None.
+    """
+
     id: int
     stream: int
     data: bytes | None
@@ -37,6 +63,15 @@ class ResponseMessage:
 
 @dataclass(frozen=True)
 class StreamMessage:
+    """A decoded stream frame.
+
+    Attributes:
+        id: Id of the request the stream belongs to.
+        flags: ``StreamFlag`` bits, including the direction.
+        data: Payload, or None when the frame has none.
+        error: The error under ``StreamFlag.ERROR``, otherwise None.
+    """
+
     id: int
     flags: int
     data: bytes | None
@@ -44,6 +79,7 @@ class StreamMessage:
 
 
 DecodedMessage = RequestMessage | ResponseMessage | StreamMessage
+"""A message returned by ``decode_frame``."""
 
 
 def _encode_frame(preencode, encode, msg) -> bytes:
@@ -82,12 +118,33 @@ def _decode_request(state):
 
 
 def encode_request(id, command, *, stream=0, data=None):
+    """Encode a request frame.
+
+    Args:
+        id: Request id. 0 makes it an event.
+        command: Command number.
+        stream: ``StreamFlag`` bits, 0 for a request without a stream.
+        data: Payload, sent only when ``stream`` is 0. None sends an empty
+            payload.
+
+    Returns:
+        The frame as bytes, length prefix included.
+    """
     return _encode_frame(
         _preencode_request, _encode_request, RequestMessage(id, command, stream, data)
     )
 
 
 def encode_event(command, data=None):
+    """Encode an event frame, a request with id 0 that gets no response.
+
+    Args:
+        command: Command number.
+        data: Payload. None sends an empty payload.
+
+    Returns:
+        The frame as bytes, length prefix included.
+    """
     return encode_request(0, command, data=data)
 
 
@@ -134,12 +191,34 @@ def _decode_response(state):
 
 
 def encode_response(id, *, stream=0, data=None):
+    """Encode a response frame.
+
+    Args:
+        id: Id of the request this answers.
+        stream: ``StreamFlag`` bits, 0 for a response without a stream.
+        data: Payload, sent only when ``stream`` is 0. None sends an empty
+            payload.
+
+    Returns:
+        The frame as bytes, length prefix included.
+    """
     return _encode_frame(
         _preencode_response, _encode_response, ResponseMessage(id, stream, data, None)
     )
 
 
 def encode_error_response(id, message, code, errno=0):
+    """Encode a response frame that rejects a request.
+
+    Args:
+        id: Id of the request this answers.
+        message: Human-readable description.
+        code: Machine-readable error code.
+        errno: Numeric error code. Defaults to 0.
+
+    Returns:
+        The frame as bytes, length prefix included.
+    """
     error = RPCRemoteError(message=message, code=code, errno=errno)
     return _encode_frame(
         _preencode_response, _encode_response, ResponseMessage(id, 0, None, error)
@@ -186,6 +265,21 @@ def _decode_stream(state):
 
 
 def encode_stream(id, flags, *, data=None, error=None):
+    """Encode a stream frame.
+
+    Args:
+        id: Id of the request the stream belongs to.
+        flags: ``StreamFlag`` bits, including the direction.
+        data: Payload, sent only under ``StreamFlag.DATA`` without
+            ``StreamFlag.ERROR``. None sends an empty payload.
+        error: ``RPCRemoteError`` to send, required under ``StreamFlag.ERROR``.
+
+    Returns:
+        The frame as bytes, length prefix included.
+
+    Raises:
+        ValueError: ``flags`` has ``StreamFlag.ERROR`` but ``error`` is None.
+    """
     if flags & StreamFlag.ERROR and error is None:
         raise ValueError("stream ERROR flag set but error is None")
     return _encode_frame(
@@ -194,6 +288,21 @@ def encode_stream(id, flags, *, data=None, error=None):
 
 
 def decode_frame(frame):
+    """Decode one frame.
+
+    Args:
+        frame: The frame bytes, length prefix included.
+
+    Returns:
+        A ``RequestMessage``, ``ResponseMessage`` or ``StreamMessage``. A field
+        the frame does not carry decodes as None; an empty payload decodes as
+        ``b""``.
+
+    Raises:
+        compact_encoding.OutOfBounds: The frame is truncated, or a field runs
+            past the end of its body.
+        UnknownMessageTypeError: The type tag is not one ``Type`` defines.
+    """
     state = cenc.State(frame)
     length = cenc.uint32.decode(state)
     if state.remaining < length:
