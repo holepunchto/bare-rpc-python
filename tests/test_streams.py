@@ -1,18 +1,20 @@
 import asyncio
 
-from bare_rpc import RPC, RPCRemoteError
+from bare_rpc import RPC, ResponseMessage, RPCRemoteError, decode_frame
 
 
-def make_pair(*, on_request_a=None, on_request_b=None):
+def make_pair(*, on_request_a=None, on_request_b=None, on_event_a=None, sent_b=None):
     holder = {}
 
     async def send_a(frame):
         await holder["b"].receive(frame)
 
     async def send_b(frame):
+        if sent_b is not None:
+            sent_b.append(frame)
         await holder["a"].receive(frame)
 
-    holder["a"] = RPC(send_a, on_request=on_request_a)
+    holder["a"] = RPC(send_a, on_request=on_request_a, on_event=on_event_a)
     holder["b"] = RPC(send_b, on_request=on_request_b)
     return holder["a"], holder["b"]
 
@@ -34,6 +36,46 @@ def test_response_stream_roundtrip():
     assert received == [b"a", b"b"]
     assert len(a_in) == 0  # reader cleaned up on END
     assert len(b_out) == 0  # writer cleaned up on end()
+
+
+def test_reply_after_opening_a_response_stream_is_ignored():
+    async def body():
+        sent = []
+        handled = asyncio.Event()
+        flushed = asyncio.Event()
+
+        async def on_request(req):
+            out = await req.create_response_stream()
+            await out.write(b"a")
+            await out.end()
+            await req.reply(b"late")
+            handled.set()
+
+        a, b = make_pair(
+            on_request_b=on_request,
+            on_event_a=lambda event: flushed.set(),
+            sent_b=sent,
+        )
+
+        stream = await a.request_with_response_stream(5)
+        received = [chunk async for chunk in stream]
+
+        await handled.wait()
+        await b.event(0)
+        await flushed.wait()
+
+        return received, sent
+
+    received, sent = asyncio.run(body())
+
+    responses = [
+        message
+        for message in map(decode_frame, sent)
+        if isinstance(message, ResponseMessage)
+    ]
+
+    assert received == [b"a"]
+    assert len(responses) == 1
 
 
 def test_response_stream_destroy_propagates():
