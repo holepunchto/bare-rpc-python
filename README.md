@@ -46,6 +46,30 @@ await client.event(command=3, data=b"note")  # fire-and-forget, no response
 
 Constructor: `RPC(send, *, on_request=None, on_event=None, on_error=None, max_frame_size=...)`. `on_request` receives an `IncomingRequest` (`.command`, `.data`, `await .reply(data)`, `await .reject(error)`); `on_event` receives an `IncomingEvent`. `close()` rejects all in-flight requests.
 
+## Command routing
+
+`CommandRouter` sends each request and event to the handler registered for its command, like `CommandRouter` in the JavaScript, Swift, and Kotlin implementations. Pass its `dispatch_request` and `dispatch_event` to `RPC`:
+
+```python
+router = rpc.CommandRouter()
+
+
+async def ping(req):
+    return b"pong"  # Replied with
+
+
+router.on_request(5, ping)
+router.on_event(3, lambda event: print(event.data))
+
+server = rpc.RPC(
+    send=my_send,
+    on_request=router.dispatch_request,
+    on_event=router.dispatch_event,
+)
+```
+
+A request handler returns the data to reply with, unless it has already replied or opened a response stream, and raising rejects the request. Handlers may be plain functions or coroutines. Requests for a command without a handler are rejected with code `ERR_UNKNOWN_COMMAND`, and events for one are dropped.
+
 ## Streams and backpressure
 
 All three streaming shapes are implemented, with cork/uncork backpressure. An `OutgoingStream` has `await write(data)`, `await end()`, and `await destroy(error=None)`; an `IncomingStream` is async-iterable.

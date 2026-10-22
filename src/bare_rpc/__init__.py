@@ -1,5 +1,6 @@
 """bare-rpc message and frame codec, wire-compatible with the JS reference."""
 
+from .command_router import CommandRouter
 from .constants import StreamFlag, Type
 from .incoming import IncomingEvent, IncomingRequest
 from .incoming_stream import IncomingStream
@@ -21,6 +22,7 @@ from .outgoing_stream import OutgoingStream
 from .rpc import RPC
 
 __all__ = [
+    "CommandRouter",
     "DecodedMessage",
     "IncomingEvent",
     "IncomingRequest",
