@@ -9,6 +9,14 @@ LOW_WATER_MARK = 4
 
 
 class IncomingStream:
+    """Chunks from the peer, read with ``async for``.
+
+    The peer is paused once 16 chunks are buffered and resumed once 4 remain.
+    Iteration ends when the peer ends the stream. It raises ``RPCRemoteError``
+    when the peer closes the stream with an error, the session's error when the
+    session fails, and ``RuntimeError`` when the session closes.
+    """
+
     def __init__(self, rpc, id, mask):
         self._rpc = rpc
         self._id = id
@@ -60,6 +68,13 @@ class IncomingStream:
         self._rpc._incoming_streams.pop(self._id, None)
 
     def destroy(self, error=None):
+        """Stop the stream and tell the peer to stop writing.
+
+        Iteration then raises ``error``, or ends when it is None.
+
+        Args:
+            error: ``RPCRemoteError`` to send to the peer.
+        """
         if self._finished:
             return
         self._finished = True

@@ -5,6 +5,8 @@ from .messages import encode_stream
 
 
 class OutgoingStream:
+    """Chunks to the peer."""
+
     def __init__(self, rpc, id, mask):
         self._rpc = rpc
         self._id = id
@@ -16,6 +18,15 @@ class OutgoingStream:
         self._uncork.set()  # start uncorked
 
     async def write(self, data):
+        """Send a chunk, waiting while the peer has paused the stream.
+
+        Args:
+            data: Payload.
+
+        Raises:
+            RuntimeError: The stream has ended or been destroyed. When the
+                session has failed, its error is raised instead.
+        """
         if self._ended:
             raise self._error or RuntimeError("stream ended")
         while self._corked and not self._ended:
@@ -27,6 +38,7 @@ class OutgoingStream:
         )
 
     async def end(self):
+        """Finish the stream. The peer's iteration ends."""
         if self._ended:
             return
         self._ended = True
@@ -36,11 +48,15 @@ class OutgoingStream:
         self._rpc._outgoing_streams.pop(self._id, None)
 
     async def destroy(self, error=None):
+        """Close the stream early.
+
+        Args:
+            error: ``RPCRemoteError`` for the peer's iteration to raise. When
+                None, the peer's iteration ends.
+        """
         if self._ended:
             return
         self._ended = True
-        # An errorless destroy() sends a bare CLOSE, which the peer reader treats
-        # as a clean end (StopAsyncIteration), not an abrupt error-close.
         if error is not None:
             self._rpc._send(
                 encode_stream(
