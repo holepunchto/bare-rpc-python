@@ -4,10 +4,8 @@ Pure-Python port of the [bare-rpc](https://github.com/holepunchto/bare-rpc) mess
 
 Typically you don't call this directly - [hrpc-python](https://github.com/holepunchto/hrpc-python) generates a typed client/server on top of it. Use it directly when you want the raw transport.
 
-## Install
-
-```sh
-pip install git+https://github.com/holepunchto/bare-rpc-python
+```
+pip install bare-rpc
 ```
 
 ## Wire codec
