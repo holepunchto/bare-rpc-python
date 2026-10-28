@@ -15,30 +15,27 @@ class OutgoingStream:
         self._error = None
         self._corked = False
         self._uncork = asyncio.Event()
-        self._uncork.set()  # start uncorked
+        self._uncork.set()
 
     async def write(self, data):
-        """Send a chunk, waiting while the peer has paused the stream.
+        """Send ``data`` to the peer, waiting while the peer has paused the
+        stream.
 
-        Args:
-            data: Payload.
-
-        Raises:
-            RuntimeError: The stream has ended or been destroyed. When the
-                session has failed, its error is raised instead.
+        Raises ``RuntimeError`` once the stream has ended or been destroyed, or
+        the error of the session once it has failed.
         """
         if self._ended:
-            raise self._error or RuntimeError("stream ended")
+            raise self._error or RuntimeError("Stream has ended")
         while self._corked and not self._ended:
             await self._uncork.wait()
         if self._ended:
-            raise self._error or RuntimeError("stream ended")
+            raise self._error or RuntimeError("Stream has ended")
         self._rpc._send(
             encode_stream(self._id, self._mask | StreamFlag.DATA, data=data)
         )
 
     async def end(self):
-        """Finish the stream. The peer's iteration ends."""
+        """Finish the stream, ending the peer's iteration."""
         if self._ended:
             return
         self._ended = True
@@ -50,9 +47,8 @@ class OutgoingStream:
     async def destroy(self, error=None):
         """Close the stream early.
 
-        Args:
-            error: ``RPCRemoteError`` for the peer's iteration to raise. When
-                None, the peer's iteration ends.
+        ``error`` is an ``RPCRemoteError`` for the peer's iteration to raise.
+        The peer's iteration ends instead if it is ``None``.
         """
         if self._ended:
             return
@@ -79,9 +75,6 @@ class OutgoingStream:
         self._uncork.set()
 
     def _abort(self, error):
-        # Local teardown for _fail/close: mark ended + store the error and wake
-        # a suspended write so it raises. Sends nothing (the connection is dead)
-        # and does not touch the maps (the caller clears them).
         self._ended = True
         self._error = error
         self._uncork.set()

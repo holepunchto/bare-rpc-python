@@ -1,12 +1,12 @@
 # bare-rpc-python
 
-Pure-Python port of the [bare-rpc](https://github.com/holepunchto/bare-rpc) message/frame wire codec and async RPC runtime, wire-compatible with the JavaScript reference. Built on [compact-encoding-python](https://github.com/holepunchto/compact-encoding-python).
-
-Typically you don't call this directly - [hrpc-python](https://github.com/holepunchto/hrpc-python) generates a typed client/server on top of it. Use it directly when you want the raw transport.
+RPC over any byte transport for Python. The Python counterpart of [bare-rpc](https://github.com/holepunchto/bare-rpc), and wire compatible with it. Built on [compact-encoding-python](https://github.com/holepunchto/compact-encoding-python).
 
 ```
 pip install bare-rpc
 ```
+
+[hrpc-python](https://github.com/holepunchto/hrpc-python) generates typed clients and servers on top of it. Use it directly for the raw transport.
 
 ## Wire codec
 
@@ -21,23 +21,58 @@ msg = rpc.decode_frame(frame)  # -> RequestMessage(id=1, command=42, ...)
 
 ## RPC runtime
 
-`RPC` is transport-agnostic: give it a `send` callback for outgoing frames and feed it inbound bytes with `receive`. Wire those to an asyncio stream, a websocket, or an in-memory pipe.
+`RPC` runs a session over a `Transport`: Any object with an async `read()`, returning `b""` once it has ended, an async `write(data)`, and `close()`. A `Sidecar` from [bare-sidecar-python](https://github.com/holepunchto/bare-sidecar-python) is one:
 
 ```python
-import bare_rpc as rpc
+import asyncio
+
+from bare_rpc import RPC
+from bare_sidecar import spawn
 
 
+async def main():
+    sidecar = await spawn("app.js")
+
+    async with RPC(sidecar) as rpc:
+        print(await rpc.request(1, b"ping"))
+
+        await rpc.event(2, b"note")
+
+
+asyncio.run(main())
+```
+
+Where `app.js` serves the requests with [bare-rpc](https://github.com/holepunchto/bare-rpc):
+
+```js
+const RPC = require("bare-rpc");
+
+new RPC(Bare.IPC, (req) => req.reply("pong"));
+```
+
+For a socket or any other asyncio stream, wrap its reader and writer in a `StreamTransport`:
+
+```python
+import asyncio
+
+from bare_rpc import RPC, StreamTransport
+
+
+async def main():
+    reader, writer = await asyncio.open_connection("localhost", 8080)
+
+    async with RPC(StreamTransport(reader, writer)) as rpc:
+        print(await rpc.request(1, b"ping"))
+```
+
+The session closes once the transport ends, and closing it closes the transport. Pass `on_request` and `on_event` to answer requests and receive events from the peer:
+
+```python
 async def on_request(req):
     await req.reply(b"pong")
 
 
-server = rpc.RPC(send=my_send, on_request=on_request)
-client = rpc.RPC(send=my_other_send)
-
-await server.receive(incoming_bytes)  # feed inbound frames in
-
-result = await client.request(command=5, data=b"ping")  # -> b"pong"
-await client.event(command=3, data=b"note")  # fire-and-forget, no response
+rpc = RPC(transport, on_request=on_request)
 ```
 
 ## Command routing
@@ -56,7 +91,7 @@ router.on_request(5, ping)
 router.on_event(3, lambda event: print(event.data))
 
 server = rpc.RPC(
-    send=my_send,
+    transport,
     on_request=router.dispatch_request,
     on_event=router.dispatch_event,
 )
@@ -65,6 +100,8 @@ server = rpc.RPC(
 ## Streams and backpressure
 
 All three streaming shapes are implemented, with backpressure.
+
+Incoming streams are read with `async for`, or a chunk at a time with `await stream.read()`, which returns `None` once the peer has ended the stream.
 
 Response stream (server streams back, client reads):
 
@@ -105,10 +142,6 @@ await out.end()
 async for chunk in incoming:
     ...
 ```
-
-## API
-
-The API reference is in the docstrings, for example `help(bare_rpc.RPC)`.
 
 ## License
 

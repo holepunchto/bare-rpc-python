@@ -2,6 +2,7 @@
 Kotlin and Swift ports."""
 
 import json
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -21,20 +22,18 @@ def _fixtures_dir():
     if not package.is_dir():
         _root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=_root) as tmp:
-            out = subprocess.run(
+            subprocess.run(
                 [
-                    "npm",
+                    shutil.which("npm"),
                     "pack",
                     f"bare-rpc-test@{VERSION}",
-                    "--json",
                     "--loglevel=error",
                 ],
                 cwd=tmp,
                 check=True,
                 capture_output=True,
-                text=True,
             )
-            tarball = Path(tmp) / json.loads(out.stdout)[0]["filename"]
+            tarball = Path(tmp) / f"bare-rpc-test-{VERSION}.tgz"
             with tarfile.open(tarball) as tar:
                 tar.extractall(tmp, filter="data")
             (Path(tmp) / "package").rename(package)

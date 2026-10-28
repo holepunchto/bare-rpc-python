@@ -1,22 +1,18 @@
 import asyncio
 
 from bare_rpc import RPC, ResponseMessage, RPCRemoteError, decode_frame
+from pipe import pair
 
 
 def make_pair(*, on_request_a=None, on_request_b=None, on_event_a=None, sent_b=None):
-    holder = {}
+    left, right = pair()
 
-    async def send_a(frame):
-        await holder["b"].receive(frame)
+    if sent_b is not None:
+        right.written = sent_b
 
-    async def send_b(frame):
-        if sent_b is not None:
-            sent_b.append(frame)
-        await holder["a"].receive(frame)
-
-    holder["a"] = RPC(send_a, on_request=on_request_a, on_event=on_event_a)
-    holder["b"] = RPC(send_b, on_request=on_request_b)
-    return holder["a"], holder["b"]
+    a = RPC(left, on_request=on_request_a, on_event=on_event_a)
+    b = RPC(right, on_request=on_request_b)
+    return a, b
 
 
 def test_response_stream_roundtrip():
@@ -184,3 +180,17 @@ def test_backpressure_throttles_producer_over_a_pair():
         len(received) == total
     )  # after RESUME, every chunk is delivered in-order, no loss
     assert received == [bytes([i % 256]) for i in range(total)]
+
+
+def test_read_returns_none_once_the_stream_ends():
+    async def on_request(req):
+        out = await req.create_response_stream()
+        await out.write(b"a")
+        await out.end()
+
+    async def body():
+        a, _b = make_pair(on_request_b=on_request)
+        stream = await a.request_with_response_stream(5)
+        return await stream.read(), await stream.read(), await stream.read()
+
+    assert asyncio.run(asyncio.wait_for(body(), 2)) == (b"a", None, None)

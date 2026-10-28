@@ -3,24 +3,14 @@ import asyncio
 import pytest
 
 from bare_rpc import RPC, CommandRouter, RPCRemoteError
+from pipe import pair
 
 
 def make_pair(router):
-    holder = {}
+    left, right = pair()
 
-    async def send_client(frame):
-        await holder["server"].receive(frame)
-
-    async def send_server(frame):
-        await holder["client"].receive(frame)
-
-    holder["client"] = RPC(send_client)
-    holder["server"] = RPC(
-        send_server,
-        on_request=router.dispatch_request,
-        on_event=router.dispatch_event,
-    )
-    return holder["client"]
+    RPC(right, on_request=router.dispatch_request, on_event=router.dispatch_event)
+    return RPC(left)
 
 
 def test_replies_with_the_handler_result():

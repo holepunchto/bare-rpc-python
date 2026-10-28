@@ -1,4 +1,4 @@
-"""bare-rpc message and frame codec, wire-compatible with the JS reference."""
+"""RPC over any byte transport, wire compatible with bare-rpc."""
 
 from .command_router import CommandRouter
 from .constants import StreamFlag, Type
@@ -20,6 +20,7 @@ from .messages import (
 )
 from .outgoing_stream import OutgoingStream
 from .rpc import RPC
+from .transport import StreamTransport, Transport
 
 __all__ = [
     "CommandRouter",
@@ -34,6 +35,8 @@ __all__ = [
     "ResponseMessage",
     "StreamFlag",
     "StreamMessage",
+    "StreamTransport",
+    "Transport",
     "Type",
     "UnknownMessageTypeError",
     "decode_frame",
