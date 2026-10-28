@@ -363,6 +363,33 @@ def test_leaving_async_with_closes_the_transport():
     assert end == b""
 
 
+def test_close_does_not_wait_for_a_read_the_transport_does_not_end():
+    class Unending(End):
+        async def read(self):
+            await asyncio.Event().wait()
+
+    async def body():
+        left = Unending()
+        left.peer = End()
+        r = RPC(left)
+        try:
+            await asyncio.wait_for(r.close(), 0.5)
+        except asyncio.TimeoutError:
+            return "hung"
+        return left.closed
+
+    assert asyncio.run(body()) is True
+
+
+def test_creating_outside_an_event_loop_raises():
+    raised = None
+    try:
+        RPC(pair()[0])
+    except RuntimeError as exc:
+        raised = exc
+    assert isinstance(raised, RuntimeError)
+
+
 def test_async_on_error_is_awaited():
     ran = []
 

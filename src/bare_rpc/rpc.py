@@ -29,8 +29,9 @@ async def _maybe_await(result):
 class RPC:
     """One end of a bare-rpc session over ``transport``.
 
-    ``transport`` is a ``Transport``. The session closes once the transport
-    ends, and leaving ``async with`` closes it.
+    ``transport`` is a ``Transport``. The session starts reading from it at
+    once, so it must be created while an event loop is running. It closes once
+    the transport ends, and leaving ``async with`` closes it.
 
     ``on_request`` is called with an
     ``IncomingRequest`` for each request, which is ignored if it is ``None``.
@@ -57,6 +58,7 @@ class RPC:
     ):
         if max_frame_size <= 0:
             raise ValueError("max_frame_size must be positive")
+        loop = asyncio.get_running_loop()
         self._transport = transport
         self._on_request = on_request
         self._on_event = on_event
@@ -74,8 +76,8 @@ class RPC:
         self._outgoing_streams = {}
         self._incoming_streams = {}
         self._pending_response_streams = {}
-        self._writer = asyncio.ensure_future(self._write_frames())
-        self._reader = asyncio.ensure_future(self._read_frames())
+        self._writer = loop.create_task(self._write_frames())
+        self._reader = loop.create_task(self._read_frames())
 
     def _send(self, frame):
         if self._failed is not None or self._closed:
@@ -122,7 +124,8 @@ class RPC:
         self._outbound_ready.set()
         await self._writer
         await _maybe_await(self._transport.close())
-        await self._reader
+        self._reader.cancel()
+        await asyncio.wait([self._reader])
 
     async def __aenter__(self):
         return self
