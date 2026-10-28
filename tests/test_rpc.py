@@ -1,23 +1,46 @@
 import asyncio
+import socket
 
 import bare_rpc as rpc
-from bare_rpc import RPC, RPCRemoteError
+from bare_rpc import RPC, RPCRemoteError, StreamTransport
+from pipe import End, pair
 
 
 def make_pair(
     *, on_request_a=None, on_event_a=None, on_request_b=None, on_event_b=None
 ):
-    holder = {}
+    left, right = pair()
 
-    async def send_a(frame):
-        await holder["b"].receive(frame)
+    a = RPC(left, on_request=on_request_a, on_event=on_event_a)
+    b = RPC(right, on_request=on_request_b, on_event=on_event_b)
+    return a, b
 
-    async def send_b(frame):
-        await holder["a"].receive(frame)
 
-    holder["a"] = RPC(send_a, on_request=on_request_a, on_event=on_event_a)
-    holder["b"] = RPC(send_b, on_request=on_request_b, on_event=on_event_b)
-    return holder["a"], holder["b"]
+class Broken:
+    def __init__(self):
+        self._closed = asyncio.Event()
+
+    async def read(self):
+        await self._closed.wait()
+        return b""
+
+    async def write(self, data):
+        raise OSError("transport down")
+
+    def close(self):
+        self._closed.set()
+
+
+class Slow(End):
+    def __init__(self, order):
+        super().__init__()
+        self.order = order
+
+    async def write(self, data):
+        self.order.append("write-start")
+        await asyncio.sleep(0)
+        await super().write(data)
+        self.order.append("write-done")
 
 
 def test_request_response_roundtrip():
@@ -75,7 +98,7 @@ def test_concurrent_requests_resolve_independently():
     assert asyncio.run(body()) == [bytes([20]), bytes([40]), bytes([60])]
 
 
-def test_receive_reassembles_split_and_coalesced_frames():
+def test_reassembles_split_and_coalesced_frames():
     async def body():
         seen = []
         done = asyncio.Event()
@@ -85,15 +108,12 @@ def test_receive_reassembles_split_and_coalesced_frames():
             if len(seen) == 2:
                 done.set()
 
-        async def send(_frame):
-            pass
-
-        r = RPC(send, on_request=on_request)
+        left, right = pair()
+        RPC(left, on_request=on_request)
         f1 = rpc.encode_request(1, 5, data=b"hi")
         f2 = rpc.encode_request(2, 6, data=b"yo")
-        # f1 split across two receives, then f2 coalesced with nothing extra
-        await r.receive(f1[:3])
-        await r.receive(f1[3:] + f2)
+        await right.write(f1[:3])
+        await right.write(f1[3:] + f2)
         await asyncio.wait_for(done.wait(), 1.0)
         return seen
 
@@ -125,49 +145,41 @@ def test_handler_raise_becomes_error_response():
 def test_decode_failure_poisons_and_rejects_pending():
     async def body():
         errors = []
-        sent = []
 
-        async def send(frame):
-            sent.append(frame)
-
-        r = RPC(send, on_error=errors.append)
-        # start a request so there is a pending future to reject
+        left, right = pair()
+        r = RPC(left, on_error=errors.append)
         task = asyncio.ensure_future(r.request(5, b"x"))
-        await asyncio.sleep(0)  # let the request register + send
-        # feed a complete frame whose body overruns during decode: length=1,
-        # body is just the REQUEST type byte, so decoding the request fields
-        # runs out of bytes -> OutOfBounds -> poison. (A frame that is merely
-        # short of its declared length is buffered, not a decode failure.)
-        await r.receive((1).to_bytes(4, "little") + bytes([1]))
+        await asyncio.sleep(0)
+        # A complete frame whose body ends after the type, so decoding the
+        # request fields runs out of bytes.
+        await right.write((1).to_bytes(4, "little") + bytes([1]))
         try:
             await task
         except Exception as exc:  # noqa: BLE001
             first = exc
-        assert errors  # on_error was called
-        # subsequent request raises immediately; event is a no-op; receive is a no-op
+        assert errors
         raised = None
         try:
             await r.request(1)
         except Exception as exc:  # noqa: BLE001
             raised = exc
-        await r.event(1)  # no raise
-        await r.receive(b"whatever")  # no raise
-        return first, raised
+        await r.event(1)
+        await r.close()
+        return first, raised, left.closed
 
-    first, raised = asyncio.run(body())
-    assert first is raised  # same stored failure error
+    first, raised, closed = asyncio.run(body())
+    assert first is raised
+    assert closed
 
 
 def test_oversize_frame_poisons():
     async def body():
         errors = []
 
-        async def send(_frame):
-            pass
-
-        r = RPC(send, on_error=errors.append, max_frame_size=8)
-        # length prefix claims 100 bytes -> 4 + 100 > 8
-        await r.receive((100).to_bytes(4, "little"))
+        left, right = pair()
+        r = RPC(left, on_error=errors.append, max_frame_size=8)
+        await right.write((100).to_bytes(4, "little"))
+        await r.close()
         return errors
 
     errors = asyncio.run(body())
@@ -176,19 +188,17 @@ def test_oversize_frame_poisons():
     assert "max_frame_size" in str(errors[0])
 
 
-def test_send_raise_poisons_and_propagates():
+def test_write_raise_poisons_and_propagates():
     async def body():
         errors = []
 
-        async def send(_frame):
-            raise OSError("transport down")
-
-        r = RPC(send, on_error=errors.append)
+        r = RPC(Broken(), on_error=errors.append)
         raised = None
         try:
             await r.request(5, b"x")
         except OSError as exc:
             raised = exc
+        await r.close()
         return errors, raised
 
     errors, raised = asyncio.run(body())
@@ -208,84 +218,57 @@ def test_request_with_no_handler_is_unanswered():
     assert asyncio.run(body()) == "unanswered"
 
 
-def test_event_returns_before_its_send_completes():
+def test_event_returns_before_its_write_completes():
     order = []
 
-    async def send(frame):
-        order.append("send-start")
-        await asyncio.sleep(0)
-        order.append("send-done")
-
     async def body():
-        r = RPC(send)
+        left, right = Slow(order), End()
+        left.peer, right.peer = right, left
+        r = RPC(left)
         await r.event(5, b"x")
         order.append("event-returned")
-        for _ in range(20):
-            if "send-done" in order:
-                break
-            await asyncio.sleep(0)
+        await r.close()
         return order
 
     result = asyncio.run(body())
-    assert "send-done" in result
-    assert result.index("event-returned") < result.index("send-done")
+    assert "write-done" in result
+    assert result.index("event-returned") < result.index("write-done")
 
 
 def test_frames_are_sent_in_call_order():
-    sent = []
-
-    async def send(frame):
-        sent.append(frame)
-
     async def body():
-        r = RPC(send)
+        left, right = pair()
+        r = RPC(left)
         await r.event(1, b"a")
         task = asyncio.ensure_future(r.request(2, b"b"))
-        for _ in range(20):
-            if len(sent) >= 2:
-                break
-            await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await r.close()
         task.cancel()
-        return sent
+        return left.written
 
     sent = asyncio.run(body())
-    assert rpc.decode_frame(sent[0]).command == 1  # event enqueued first
-    assert rpc.decode_frame(sent[1]).command == 2  # request enqueued second
+    assert rpc.decode_frame(sent[0]).command == 1
+    assert rpc.decode_frame(sent[1]).command == 2
 
 
-def test_close_stops_the_writer_and_drops_later_sends():
-    sent = []
-
-    async def send(frame):
-        sent.append(frame)
-
+def test_close_writes_earlier_frames_and_drops_later_ones():
     async def body():
-        r = RPC(send)
-        assert r._writer_task is None
+        left, right = pair()
+        r = RPC(left)
         await r.event(1, b"a")
-        assert r._writer_task is not None  # writer starts on first send
-        for _ in range(20):
-            if sent:
-                break
-            await asyncio.sleep(0)
-        r.close()
-        await r.event(2, b"b")  # dropped (closed)
-        for _ in range(20):
-            await asyncio.sleep(0)
-        return sent, r._writer_task
+        await r.close()
+        await r.event(2, b"b")
+        return left.written, left.closed
 
-    sent, writer = asyncio.run(body())
-    assert len(sent) == 1  # only the pre-close event was sent
-    assert writer.done()  # writer exited after close
+    sent, closed = asyncio.run(body())
+    assert [rpc.decode_frame(frame).command for frame in sent] == [1]
+    assert closed
 
 
 def test_request_after_close_raises_not_hangs():
-    async def send(_frame):
-        pass
-
     async def body():
-        r = RPC(send)
-        r.close()
+        r = RPC(pair()[0])
+        await r.close()
         raised = None
         try:
             await asyncio.wait_for(r.request(1, b"x"), 0.5)
@@ -300,14 +283,11 @@ def test_request_after_close_raises_not_hangs():
 
 
 def test_close_rejects_in_flight_request():
-    async def send(_frame):
-        pass
-
     async def body():
-        r = RPC(send)
+        r = RPC(pair()[0])
         task = asyncio.ensure_future(r.request(1, b"x"))
-        await asyncio.sleep(0)  # let it register + enqueue
-        r.close()
+        await asyncio.sleep(0)
+        await r.close()
         raised = None
         try:
             await asyncio.wait_for(task, 0.5)
@@ -333,19 +313,16 @@ def test_event_handler_error_poisons_the_connection():
             errors.append(err)
             done.set()
 
-        async def send(_frame):
-            pass
-
-        r = RPC(send, on_event=on_event, on_error=on_error)
-        # an event frame (id 0) whose sync handler raises -> _run_event -> _fail
-        await r.receive(rpc.encode_event(3, b"note"))
+        left, right = pair()
+        r = RPC(left, on_event=on_event, on_error=on_error)
+        await right.write(rpc.encode_event(3, b"note"))
         await asyncio.wait_for(done.wait(), 1.0)
-        # post-poison, a subsequent request raises the stored error
         raised = None
         try:
             await r.request(1)
         except Exception as exc:  # noqa: BLE001
             raised = exc
+        await r.close()
         return errors, raised
 
     errors, raised = asyncio.run(body())
@@ -354,27 +331,36 @@ def test_event_handler_error_poisons_the_connection():
     assert str(raised) == "bad event"
 
 
-def test_receive_after_close_ignores_inbound_frames():
-    calls = []
-
-    async def on_request(req):
-        calls.append(req.command)
-        await req.reply(b"late")
-
+def test_transport_end_closes_the_session():
     async def body():
-        async def send(_frame):
-            pass
+        left, right = pair()
+        r = RPC(left)
+        task = asyncio.ensure_future(r.request(1, b"x"))
+        await right.read()
+        await right.close()
+        raised = None
+        try:
+            await asyncio.wait_for(task, 0.5)
+        except RuntimeError as exc:
+            raised = exc
+        except asyncio.TimeoutError:
+            raised = "hung"
+        return raised
 
-        r = RPC(send, on_request=on_request)
-        r.close()
-        # A full request frame arriving after close must not be dispatched,
-        # consistent with request()/event() refusing once closed.
-        await r.receive(rpc.encode_request(1, 5, data=b"x"))
-        for _ in range(3):
-            await asyncio.sleep(0)
-        return calls
+    assert isinstance(asyncio.run(body()), RuntimeError)
 
-    assert asyncio.run(body()) == []
+
+def test_leaving_async_with_closes_the_transport():
+    async def body():
+        left, right = pair()
+        async with RPC(left) as r:
+            await r.event(1)
+        return left.closed, await right.read(), await right.read()
+
+    closed, frame, end = asyncio.run(body())
+    assert closed
+    assert rpc.decode_frame(frame).command == 1
+    assert end == b""
 
 
 def test_async_on_error_is_awaited():
@@ -384,14 +370,31 @@ def test_async_on_error_is_awaited():
         ran.append(err)
 
     async def body():
-        async def send(_frame):
-            pass
-
-        # max_frame_size 8 but the frame declares length 9 -> _fail -> on_error.
-        r = RPC(send, on_error=on_error, max_frame_size=8)
-        await r.receive((9).to_bytes(4, "little") + b"123456789")
+        left, right = pair()
+        r = RPC(left, on_error=on_error, max_frame_size=8)
+        await right.write((9).to_bytes(4, "little") + b"123456789")
+        await r.close()
         for _ in range(3):
             await asyncio.sleep(0)
         return ran
 
     assert len(asyncio.run(body())) == 1
+
+
+def test_runs_over_asyncio_streams():
+    async def on_request(req):
+        await req.reply(req.data + b" pong")
+
+    async def body():
+        left, right = socket.socketpair()
+        a = RPC(StreamTransport(*await asyncio.open_connection(sock=left)))
+        b = RPC(
+            StreamTransport(*await asyncio.open_connection(sock=right)),
+            on_request=on_request,
+        )
+        reply = await a.request(1, b"ping")
+        await a.close()
+        await b.close()
+        return reply
+
+    assert asyncio.run(asyncio.wait_for(body(), 2)) == b"ping pong"

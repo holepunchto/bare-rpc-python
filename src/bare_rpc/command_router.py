@@ -14,39 +14,29 @@ class CommandRouter:
         self._event_handlers = {}
 
     def on_request(self, command, handler):
-        """Answer requests for ``command`` with ``handler``.
+        """Answer requests for ``command`` with ``handler``, replacing any
+        handler registered for it.
 
-        Replaces any handler registered for it.
-
-        Args:
-            command: Command number.
-            handler: Called with the ``IncomingRequest``. Returns the payload
-                to reply with, unless it already answered the request. May be a
-                coroutine function.
+        ``handler`` is called with the ``IncomingRequest`` and returns the
+        payload to reply with, unless it already answered the request. It may
+        be a coroutine function.
         """
         self._request_handlers[command] = handler
 
     def on_event(self, command, handler):
-        """Deliver events for ``command`` to ``handler``.
+        """Deliver events for ``command`` to ``handler``, replacing any handler
+        registered for it.
 
-        Replaces any handler registered for it.
-
-        Args:
-            command: Command number.
-            handler: Called with the ``IncomingEvent``. May be a coroutine
-                function.
+        ``handler`` is called with the ``IncomingEvent`` and may be a coroutine
+        function.
         """
         self._event_handlers[command] = handler
 
     async def dispatch_request(self, request):
         """Answer ``request`` with the handler for its command.
 
-        Args:
-            request: The ``IncomingRequest``.
-
-        Raises:
-            RPCRemoteError: No handler is registered for the command, with code
-                ``ERR_UNKNOWN_COMMAND``.
+        Raises ``RPCRemoteError`` with code ``ERR_UNKNOWN_COMMAND`` if no
+        handler is registered for it.
         """
         handler = self._request_handlers.get(request.command)
 
@@ -58,11 +48,8 @@ class CommandRouter:
         await request.reply(await _maybe_await(handler(request)))
 
     async def dispatch_event(self, event):
-        """Deliver ``event`` to the handler for its command, or drop it.
-
-        Args:
-            event: The ``IncomingEvent``.
-        """
+        """Deliver ``event`` to the handler for its command, or drop it if
+        there is none."""
         handler = self._event_handlers.get(event.command)
 
         if handler is not None:

@@ -15,6 +15,7 @@ from .messages import (
     encode_stream,
 )
 from .outgoing_stream import OutgoingStream
+from .transport import Transport
 
 DEFAULT_MAX_FRAME_SIZE = 16 * 1024 * 1024
 
@@ -26,34 +27,28 @@ async def _maybe_await(result):
 
 
 class RPC:
-    """One end of a bare-rpc session, independent of the transport.
+    """One end of a bare-rpc session over ``transport``.
 
-    Outgoing frames go to ``send``; inbound bytes come in through ``receive``.
+    ``transport`` is a ``Transport``. The session closes once the transport
+    ends, and leaving ``async with`` closes it.
 
-    A failure is terminal: ``send`` raising, a malformed or oversized inbound
-    frame, or ``on_event`` raising. Pending requests and streams fail with the
-    error, later requests raise it, and ``on_error`` is called with it.
+    ``on_request`` is called with an
+    ``IncomingRequest`` for each request, which is ignored if it is ``None``.
+    Raising before answering rejects the request with the exception, unless the
+    request opened a request stream. ``on_event`` is called with an
+    ``IncomingEvent`` for each event, which is dropped if it is ``None``.
+    ``on_error`` is called with the error once the session fails. Each of them
+    may be a coroutine function. ``max_frame_size`` is the size of the largest
+    inbound frame accepted, including its length prefix.
 
-    Args:
-        send: Called with each outgoing frame as bytes, in order. May be a
-            coroutine function.
-        on_request: Called with an ``IncomingRequest`` for each request. May be
-            a coroutine function. Raising before answering rejects the request
-            with the exception, unless the request opened a request stream.
-            Requests are ignored when None.
-        on_event: Called with an ``IncomingEvent`` for each event. May be a
-            coroutine function. Events are dropped when None.
-        on_error: Called with the error when the session fails. May be a
-            coroutine function.
-        max_frame_size: Largest inbound frame accepted, length prefix included.
-
-    Raises:
-        ValueError: ``max_frame_size`` is not positive.
+    A failure is terminal: the transport or ``on_event`` raising, or a
+    malformed or oversized inbound frame. Pending requests and streams fail
+    with the error, later requests raise it, and the transport is closed.
     """
 
     def __init__(
         self,
-        send,
+        transport: Transport,
         *,
         on_request=None,
         on_event=None,
@@ -62,7 +57,7 @@ class RPC:
     ):
         if max_frame_size <= 0:
             raise ValueError("max_frame_size must be positive")
-        self._send_cb = send
+        self._transport = transport
         self._on_request = on_request
         self._on_event = on_event
         self._on_error = on_error
@@ -74,62 +69,74 @@ class RPC:
         self._failed = None
         self._outbound = deque()
         self._outbound_ready = asyncio.Event()
-        self._writer_task = None
         self._closed = False
+        self._closing = None
         self._outgoing_streams = {}
         self._incoming_streams = {}
         self._pending_response_streams = {}
+        self._writer = asyncio.ensure_future(self._write_frames())
+        self._reader = asyncio.ensure_future(self._read_frames())
 
     def _send(self, frame):
         if self._failed is not None or self._closed:
             return
         self._outbound.append(frame)
         self._outbound_ready.set()
-        self._ensure_writer()
 
-    def _ensure_writer(self):
-        if self._writer_task is None:
-            self._writer_task = asyncio.create_task(self._writer())
-
-    async def _writer(self):
-        while self._failed is None and not self._closed:
-            await self._outbound_ready.wait()
-            self._outbound_ready.clear()
+    async def _write_frames(self):
+        while True:
             while self._outbound:
-                frame = self._outbound.popleft()
                 try:
-                    await _maybe_await(self._send_cb(frame))
+                    await self._transport.write(self._outbound.popleft())
                 except Exception as exc:
                     self._fail(exc)
                     return
+            if self._failed is not None or self._closed:
+                return
+            self._outbound_ready.clear()
+            await self._outbound_ready.wait()
 
-    def close(self):
-        """Close the session.
+    async def _read_frames(self):
+        try:
+            while data := await self._transport.read():
+                self._receive(data)
+        except Exception as exc:
+            self._fail(exc)
+        self._spawn(self.close())
+
+    async def close(self):
+        """Close the session and the transport once the frames already sent
+        have been written.
 
         Pending requests and streams fail with ``RuntimeError``, and later
-        events and inbound bytes are dropped.
+        events and inbound frames are dropped.
         """
-        if self._failed is not None or self._closed:
-            return
+        if self._closing is None:
+            self._closing = asyncio.ensure_future(self._close())
+        await asyncio.shield(self._closing)
+
+    async def _close(self):
         self._closed = True
-        self._outbound.clear()
+        if self._failed is None:
+            self._reject_all(RuntimeError("RPC is closed"))
         self._outbound_ready.set()
-        self._reject_all(RuntimeError("RPC is closed"))
+        await self._writer
+        await _maybe_await(self._transport.close())
+        await self._reader
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        await self.close()
 
     async def request(self, command, data=None):
-        """Send a request and wait for the reply.
+        """Send a request for ``command`` with ``data``, or an empty payload if
+        ``None``, and return the payload of the reply.
 
-        Args:
-            command: Command number.
-            data: Payload. None sends an empty payload.
-
-        Returns:
-            The reply payload as bytes.
-
-        Raises:
-            RPCRemoteError: The peer rejected the request.
-            RuntimeError: The session is closed. When the session has failed,
-                its error is raised instead.
+        Raises ``RPCRemoteError`` if the peer rejects the request,
+        ``RuntimeError`` if the session is closed, and the error of the session
+        if it has failed.
         """
         if self._failed is not None:
             raise self._failed
@@ -143,20 +150,13 @@ class RPC:
         return await future
 
     async def request_with_response_stream(self, command, data=None):
-        """Send a request and wait for the peer to open a response stream.
+        """Send a request for ``command`` with ``data``, or an empty payload if
+        ``None``, and return the ``IncomingStream`` of the response stream the
+        peer opens.
 
-        Args:
-            command: Command number.
-            data: Payload. None sends an empty payload.
-
-        Returns:
-            An ``IncomingStream`` of the peer's chunks.
-
-        Raises:
-            RPCRemoteError: The peer rejected the request.
-            RuntimeError: The session is closed, or the peer replied without
-                opening a stream. When the session has failed, its error is
-                raised instead.
+        Raises ``RPCRemoteError`` if the peer rejects the request,
+        ``RuntimeError`` if the session is closed or the peer replies without
+        opening a stream, and the error of the session if it has failed.
         """
         if self._failed is not None:
             raise self._failed
@@ -170,19 +170,13 @@ class RPC:
         return await future
 
     async def stream_request(self, command):
-        """Open a request stream to the peer.
+        """Open a request stream for ``command`` and return an
+        ``(OutgoingStream, reply)`` pair.
 
-        Args:
-            command: Command number.
-
-        Returns:
-            An ``(OutgoingStream, reply)`` pair. ``reply`` is a future that
-            resolves to the reply payload as bytes, or raises
-            ``RPCRemoteError`` if the peer rejects the request.
-
-        Raises:
-            RuntimeError: The session is closed. When the session has failed,
-                its error is raised instead.
+        ``reply`` is a future of the payload of the reply, which raises
+        ``RPCRemoteError`` if the peer rejects the request. Raises
+        ``RuntimeError`` if the session is closed, and the error of the session
+        if it has failed.
         """
         if self._failed is not None:
             raise self._failed
@@ -198,19 +192,13 @@ class RPC:
         return outgoing, future
 
     async def create_bidirectional_stream(self, command):
-        """Open a request stream and wait for the peer's response stream.
+        """Open a request stream for ``command`` and return an
+        ``(OutgoingStream, IncomingStream)`` pair once the peer opens its
+        response stream.
 
-        Args:
-            command: Command number.
-
-        Returns:
-            An ``(OutgoingStream, IncomingStream)`` pair.
-
-        Raises:
-            RPCRemoteError: The peer rejected the request.
-            RuntimeError: The session is closed, or the peer replied without
-                opening a stream. When the session has failed, its error is
-                raised instead.
+        Raises ``RPCRemoteError`` if the peer rejects the request,
+        ``RuntimeError`` if the session is closed or the peer replies without
+        opening a stream, and the error of the session if it has failed.
         """
         if self._failed is not None:
             raise self._failed
@@ -227,28 +215,16 @@ class RPC:
         return outgoing, incoming
 
     async def event(self, command, data=None):
-        """Send an event, which gets no response.
+        """Send an event for ``command`` with ``data``, or an empty payload if
+        ``None``, which gets no response.
 
-        Dropped when the session is closed or failed.
-
-        Args:
-            command: Command number.
-            data: Payload. None sends an empty payload.
+        The event is dropped if the session is closed or has failed.
         """
         if self._failed is not None or self._closed:
             return
         self._send(encode_event(command, data=data))
 
-    async def receive(self, data):
-        """Feed inbound bytes from the transport.
-
-        ``data`` need not align with frames: partial and coalesced frames are
-        both handled. A malformed or oversized frame fails the session rather
-        than raising here.
-
-        Args:
-            data: Bytes read from the transport.
-        """
+    def _receive(self, data):
         if self._failed is not None or self._closed:
             return
         self._buffer += data
@@ -257,7 +233,7 @@ class RPC:
                 return
             length = int.from_bytes(self._buffer[0:4], "little")
             if 4 + length > self._max_frame_size:
-                self._fail(ValueError("frame exceeds max_frame_size"))
+                self._fail(ValueError("Frame exceeds max_frame_size"))
                 return
             if len(self._buffer) < 4 + length:
                 return
@@ -302,7 +278,7 @@ class RPC:
                     pending_stream.set_exception(message.error)
                 else:
                     pending_stream.set_exception(
-                        RuntimeError("expected a response stream")
+                        RuntimeError("Expected a response stream")
                     )
         elif isinstance(message, StreamMessage):
             self._on_stream(message)
@@ -327,12 +303,8 @@ class RPC:
         self._spawn(self._run_stream_request(req))
 
     async def _run_stream_request(self, req):
-        # Unlike _run_request, a throwing stream-open handler is NOT auto-rejected:
-        # by the time we're here the id has already been promoted to a stream (its
-        # OPEN ack is already on the wire), so a reject would send a spurious
-        # second/duplicate response on a stream id, not a clean error for request
-        # id 0. The generated code is responsible for replying / destroying its
-        # streams. Matches Swift's try? on handleRequestStreamOpen.
+        # The stream is already open, so the handler answers or destroys it
+        # rather than the request being rejected.
         try:
             await _maybe_await(self._on_request(req))
         except Exception:
@@ -341,9 +313,7 @@ class RPC:
     def _on_stream(self, message):
         flags = message.flags
         if flags & StreamFlag.OPEN:
-            # STREAM|OPEN is a protocol ack, not consumed by this runtime (kept
-            # for wire parity / future cross-runtime interop); intentionally a
-            # no-op on receipt, not dead code.
+            # Acknowledges a stream this side opened, which needs no handling.
             return
         if flags & StreamFlag.CLOSE:
             stream = self._incoming_streams.get(message.id)
@@ -401,7 +371,7 @@ class RPC:
             self._fail(exc)
 
     def _fail(self, error):
-        if self._failed is not None:
+        if self._failed is not None or self._closed:
             return
         self._failed = error
         self._buffer.clear()
@@ -412,6 +382,7 @@ class RPC:
             result = self._on_error(error)
             if inspect.isawaitable(result):
                 self._spawn(_maybe_await(result))
+        self._spawn(self.close())
 
     def _reject_all(self, error):
         for future in self._pending.values():

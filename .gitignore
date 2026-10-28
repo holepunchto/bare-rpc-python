@@ -6,6 +6,4 @@ __pycache__/
 build/
 dist/
 .venv/
-.superpowers/
 tests/.bare-rpc-test/
-docs/superpowers/
