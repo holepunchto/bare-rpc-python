@@ -148,7 +148,7 @@ def test_decode_failure_poisons_and_rejects_pending():
 
         left, right = pair()
         r = RPC(left, on_error=errors.append)
-        task = asyncio.ensure_future(r.request(5, b"x"))
+        task = asyncio.create_task(r.request(5, b"x"))
         await asyncio.sleep(0)
         # A complete frame whose body ends after the type, so decoding the
         # request fields runs out of bytes.
@@ -184,8 +184,8 @@ def test_oversize_frame_poisons():
 
     errors = asyncio.run(body())
     assert len(errors) == 1
-    assert isinstance(errors[0], ValueError)
-    assert "max_frame_size" in str(errors[0])
+    assert isinstance(errors[0], rpc.RPCError)
+    assert errors[0].code == "FRAME_TOO_LARGE"
 
 
 def test_write_raise_poisons_and_propagates():
@@ -206,16 +206,17 @@ def test_write_raise_poisons_and_propagates():
     assert errors and errors[0] is raised
 
 
-def test_request_with_no_handler_is_unanswered():
+def test_a_request_with_no_handler_is_rejected_as_an_unknown_command():
     async def body():
-        a, _b = make_pair()  # no on_request on b
+        a, _b = make_pair()
         try:
-            await asyncio.wait_for(a.request(5, b"x"), 0.2)
-        except asyncio.TimeoutError:
-            return "unanswered"
-        return "answered"
+            await asyncio.wait_for(a.request(5, b"x"), 1)
+        except RPCRemoteError as err:
+            return err
+        raise AssertionError("expected RPCRemoteError")
 
-    assert asyncio.run(body()) == "unanswered"
+    err = asyncio.run(body())
+    assert (err.code, err.errno) == ("UNKNOWN_COMMAND", 0)
 
 
 def test_event_returns_before_its_write_completes():
@@ -240,7 +241,7 @@ def test_frames_are_sent_in_call_order():
         left, right = pair()
         r = RPC(left)
         await r.event(1, b"a")
-        task = asyncio.ensure_future(r.request(2, b"b"))
+        task = asyncio.create_task(r.request(2, b"b"))
         await asyncio.sleep(0)
         await r.close()
         task.cancel()
@@ -285,7 +286,7 @@ def test_request_after_close_raises_not_hangs():
 def test_close_rejects_in_flight_request():
     async def body():
         r = RPC(pair()[0])
-        task = asyncio.ensure_future(r.request(1, b"x"))
+        task = asyncio.create_task(r.request(1, b"x"))
         await asyncio.sleep(0)
         await r.close()
         raised = None
@@ -335,7 +336,7 @@ def test_transport_end_closes_the_session():
     async def body():
         left, right = pair()
         r = RPC(left)
-        task = asyncio.ensure_future(r.request(1, b"x"))
+        task = asyncio.create_task(r.request(1, b"x"))
         await right.read()
         await right.close()
         raised = None
@@ -425,3 +426,64 @@ def test_runs_over_asyncio_streams():
         return reply
 
     assert asyncio.run(asyncio.wait_for(body(), 2)) == b"ping pong"
+
+
+def test_wait_returns_once_the_transport_ends():
+    async def body():
+        left, right = pair()
+        r = RPC(left)
+        waiting = asyncio.create_task(r.wait())
+        await asyncio.sleep(0)
+        running = not waiting.done()
+        await right.close()
+        await asyncio.wait_for(waiting, 1)
+        return running
+
+    assert asyncio.run(body())
+
+
+def test_wait_returns_once_the_session_is_closed():
+    async def body():
+        r = RPC(pair()[0])
+        await r.close()
+        await asyncio.wait_for(r.wait(), 1)
+
+    asyncio.run(body())
+
+
+def test_wait_raises_the_error_that_failed_the_session():
+    async def body():
+        left, right = pair()
+        r = RPC(left, max_frame_size=8)
+        waiting = asyncio.create_task(r.wait())
+        await right.write((100).to_bytes(4, "little"))
+        try:
+            await asyncio.wait_for(waiting, 1)
+        except rpc.RPCError as err:
+            return err.code
+        finally:
+            await r.close()
+
+    assert asyncio.run(body()) == "FRAME_TOO_LARGE"
+
+
+def test_a_handler_subclass_rejects_requests_it_does_not_handle():
+    class Events(rpc.Handler):
+        def __init__(self):
+            self.received = asyncio.get_running_loop().create_future()
+
+        def handle_event(self, event):
+            self.received.set_result(event.data)
+
+    async def body():
+        left, right = pair()
+        handler = Events()
+        RPC(right, handler=handler)
+        client = RPC(left)
+        await client.event(1, b"note")
+        try:
+            await asyncio.wait_for(client.request(2), 1)
+        except RPCRemoteError as err:
+            return await handler.received, err.code
+
+    assert asyncio.run(body()) == (b"note", "UNKNOWN_COMMAND")

@@ -11,6 +11,12 @@ license = "Apache-2.0"
 authors = [{ name = "Holepunch" }]
 requires-python = ">=3.10"
 dependencies = ["compact-encoding~=0.1.0"]
+classifiers = [
+  "Framework :: AsyncIO",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Typing :: Typed",
+]
 
 [project.optional-dependencies]
 dev = [

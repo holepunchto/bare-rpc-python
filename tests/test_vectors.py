@@ -73,8 +73,10 @@ def _assert_decoded_matches(msg, descriptor):
         assert msg.stream == descriptor["stream"]
         err = descriptor.get("error")
         if err is not None:
-            assert msg.error == RPCRemoteError(
-                err["message"], err["code"], err["errno"]
+            assert (msg.error.message, msg.error.code, msg.error.errno) == (
+                err["message"],
+                err["code"],
+                err["errno"],
             )
         else:
             assert msg.error is None
@@ -86,8 +88,10 @@ def _assert_decoded_matches(msg, descriptor):
         assert msg.flags == flags
         err = descriptor.get("error")
         if err is not None:
-            assert msg.error == RPCRemoteError(
-                err["message"], err["code"], err["errno"]
+            assert (msg.error.message, msg.error.code, msg.error.errno) == (
+                err["message"],
+                err["code"],
+                err["errno"],
             )
             assert msg.data is None
         else:
@@ -120,7 +124,9 @@ def test_negative_frames(fixtures):
     with an unrecognized type - are signalled rather than skipped."""
     for entry in fixtures["negative"]["frames"]:
         frame = bytes.fromhex(entry["hex"])
-        with pytest.raises((cenc.OutOfBounds, rpc.UnknownMessageTypeError)):
+        unknown = frame[4:5] not in (b"", b"\x01", b"\x02", b"\x03")
+        expected = rpc.UnknownMessageTypeError if unknown else cenc.OutOfBounds
+        with pytest.raises(expected):
             rpc.decode_frame(frame)
 
 

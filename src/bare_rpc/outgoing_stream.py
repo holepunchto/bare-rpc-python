@@ -1,80 +1,106 @@
 import asyncio
 
-from .constants import StreamFlag
-from .messages import encode_stream
+from .constants import _CLOSE, _DATA, _END, _ERROR
+from .messages import RPCRemoteError, encode_stream
+
+_ACTIVE = "active"
+_ENDING = "ending"
+_CLOSED = "closed"
 
 
 class OutgoingStream:
-    """Chunks to the peer."""
+    """Chunks to the peer.
 
-    def __init__(self, rpc, id, mask):
+    Nothing is sent on it until the peer has opened its end of the stream.
+    """
+
+    def __init__(self, rpc, id, mask, *, opened=False):
         self._rpc = rpc
         self._id = id
         self._mask = mask
-        self._ended = False
+        self._phase = _ACTIVE
+        # Once closed, the error that writes raise, or None to drop them.
         self._error = None
-        self._corked = False
-        self._uncork = asyncio.Event()
-        self._uncork.set()
+        self._opened = asyncio.Event()
+        if opened:
+            self._opened.set()
+        self._uncorked = asyncio.Event()
+        self._uncorked.set()
 
-    async def write(self, data):
-        """Send ``data`` to the peer, waiting while the peer has paused the
-        stream.
+    async def write(self, data: bytes) -> None:
+        """Send ``data`` to the peer and wait until it has been written to the
+        transport, first waiting until the peer has opened its end of the
+        stream and while it has paused the stream.
 
-        Raises ``RuntimeError`` once the stream has ended or been destroyed, or
-        the error of the session once it has failed.
+        ``data`` is dropped once ``end()`` has been called. Raises
+        ``RuntimeError`` once the stream has been destroyed, and the error of
+        the session once it has failed or closed.
         """
-        if self._ended:
-            raise self._error or RuntimeError("Stream has ended")
-        while self._corked and not self._ended:
-            await self._uncork.wait()
-        if self._ended:
-            raise self._error or RuntimeError("Stream has ended")
-        self._rpc._send(
-            encode_stream(self._id, self._mask | StreamFlag.DATA, data=data)
+        if self._phase is not _ACTIVE:
+            if self._error is not None:
+                raise self._error
+            return
+        await self._opened.wait()
+        while not self._uncorked.is_set() and self._phase is not _CLOSED:
+            await self._uncorked.wait()
+        if self._phase is _CLOSED:
+            if self._error is not None:
+                raise self._error
+            return
+        await self._rpc._send_and_wait(
+            encode_stream(self._id, self._mask | _DATA, data=data)
         )
 
-    async def end(self):
-        """Finish the stream, ending the peer's iteration."""
-        if self._ended:
+    async def end(self) -> None:
+        """Finish the stream, ending the peer's iteration, once the peer has
+        opened its end of the stream."""
+        if self._phase is not _ACTIVE:
             return
-        self._ended = True
-        self._rpc._send(encode_stream(self._id, self._mask | StreamFlag.END))
-        self._rpc._send(encode_stream(self._id, self._mask | StreamFlag.CLOSE))
-        self._uncork.set()
-        self._rpc._outgoing_streams.pop(self._id, None)
+        self._phase = _ENDING
+        await self._opened.wait()
+        if self._phase is not _ENDING:
+            return
+        self._close(None)
+        self._rpc._send(encode_stream(self._id, self._mask | _END))
 
-    async def destroy(self, error=None):
+    def destroy(self, error: RPCRemoteError | None = None) -> None:
         """Close the stream early.
 
         ``error`` is an ``RPCRemoteError`` for the peer's iteration to raise.
         The peer's iteration ends instead if it is ``None``.
         """
-        if self._ended:
+        if self._phase is _CLOSED:
             return
-        self._ended = True
+        ending = self._phase is _ENDING
+        self._send_close(error, None if ending else RuntimeError("Stream has ended"))
+
+    def _release(self, error):
+        self._send_close(error, None)
+
+    def _send_close(self, error, write_error):
+        self._close(write_error)
         if error is not None:
             self._rpc._send(
-                encode_stream(
-                    self._id,
-                    self._mask | StreamFlag.CLOSE | StreamFlag.ERROR,
-                    error=error,
-                )
+                encode_stream(self._id, self._mask | _CLOSE | _ERROR, error=error)
             )
         else:
-            self._rpc._send(encode_stream(self._id, self._mask | StreamFlag.CLOSE))
-        self._uncork.set()
-        self._rpc._outgoing_streams.pop(self._id, None)
+            self._rpc._send(encode_stream(self._id, self._mask | _CLOSE))
 
-    def cork(self):
-        self._corked = True
-        self._uncork.clear()
+    def _close(self, error):
+        self._phase = _CLOSED
+        self._error = error
+        self._opened.set()
+        self._uncorked.set()
+        self._rpc._outgoing_streams.pop((self._id, self._mask), None)
 
-    def uncork(self):
-        self._corked = False
-        self._uncork.set()
+    def _cork(self):
+        self._uncorked.clear()
+
+    def _uncork(self):
+        self._uncorked.set()
+
+    def _open(self):
+        self._opened.set()
 
     def _abort(self, error):
-        self._ended = True
-        self._error = error
-        self._uncork.set()
+        self._close(error)
