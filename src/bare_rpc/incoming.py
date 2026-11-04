@@ -1,12 +1,27 @@
-from .constants import StreamFlag
-from .messages import RPCRemoteError, encode_error_response, encode_response
+from .constants import _OPEN, _RESPONSE
+from .incoming_stream import IncomingStream
+from .messages import RPCError, RPCRemoteError, encode_error_response, encode_response
 from .outgoing_stream import OutgoingStream
+
+
+def _unknown_command(command):
+    return RPCRemoteError(f"Unknown command {command}", "UNKNOWN_COMMAND", 0)
+
+
+def _remote_error(error):
+    if isinstance(error, RPCRemoteError):
+        return error
+    return RPCRemoteError(
+        str(error),
+        getattr(error, "code", "") or "",
+        getattr(error, "errno", 0) or 0,
+    )
 
 
 class IncomingEvent:
     """An event from the peer, carrying its ``command`` and ``data``."""
 
-    def __init__(self, command, data):
+    def __init__(self, command: int, data: bytes) -> None:
         self.command = command
         self.data = data
 
@@ -17,47 +32,75 @@ class IncomingRequest:
     ``data`` is ``None`` when the request opened a request stream, in which
     case ``request_stream`` is an ``IncomingStream`` of the peer's chunks.
 
-    Answer it with ``reply()``, ``reject()``, or ``create_response_stream()``.
-    Calls to ``reply()`` and ``reject()`` once it is answered are ignored.
+    Answer it once with ``reply()``, ``reject()``, or
+    ``create_response_stream()``. Each of them raises an ``RPCError`` with code
+    ``ALREADY_SENT`` once ``sent`` is true.
     """
 
-    def __init__(self, rpc, id, command, data):
+    def __init__(
+        self, rpc, id: int, command: int, data: bytes | None, *, streamed=False
+    ) -> None:
         self._rpc = rpc
         self.id = id
         self.command = command
         self.data = data
-        self.request_stream = None
-        self._replied = False
+        self._streamed = streamed
+        self._request_stream = None
+        self._response_stream = None
+        self._sent = False
 
-    async def reply(self, data=None):
+    @property
+    def request_stream(self) -> IncomingStream | None:
+        """The ``IncomingStream`` of the peer's chunks, or ``None`` if the
+        request did not open a request stream.
+
+        Reading it for the first time opens the stream toward the peer, and
+        chunks that the peer sends before then are dropped. Later reads return
+        the same stream.
+        """
+        if self._streamed and self._request_stream is None:
+            self._request_stream = self._rpc._open_request_stream(self.id)
+        return self._request_stream
+
+    @property
+    def sent(self) -> bool:
+        """Whether the request has been answered."""
+        return self._sent
+
+    async def reply(self, data: bytes | None = None) -> None:
         """Answer the request with ``data``, or an empty payload if ``None``."""
-        if self._replied:
-            return
-        self._replied = True
+        self._answer()
         self._rpc._send(encode_response(self.id, data=data))
 
-    async def reject(self, error):
+    async def reject(self, error: Exception) -> None:
         """Answer the request with ``error``.
 
         An ``RPCRemoteError`` is sent as is, and any other exception with
         ``str(error)`` as its message.
         """
-        if self._replied:
-            return
-        self._replied = True
-        if isinstance(error, RPCRemoteError):
-            message, code, errno = error.message, error.code, error.errno
-        else:
-            message = str(error)
-            code = getattr(error, "code", "") or ""
-            errno = getattr(error, "errno", 0) or 0
-        self._rpc._send(encode_error_response(self.id, message, code, errno))
+        self._answer()
+        error = _remote_error(error)
+        self._rpc._send(
+            encode_error_response(self.id, error.message, error.code, error.errno)
+        )
 
-    async def create_response_stream(self):
+    def _answer(self):
+        if self._sent:
+            raise RPCError("Response has already been sent", "ALREADY_SENT")
+        self._sent = True
+        return self._rpc._on_answered(self.id)
+
+    async def create_response_stream(self) -> OutgoingStream:
         """Answer the request by opening a response stream and return its
         ``OutgoingStream``."""
-        self._replied = True
-        outgoing = OutgoingStream(self._rpc, self.id, StreamFlag.RESPONSE)
-        self._rpc._outgoing_streams[self.id] = outgoing
-        self._rpc._send(encode_response(self.id, stream=StreamFlag.OPEN))
+        outgoing = OutgoingStream(self._rpc, self.id, _RESPONSE, opened=self._answer())
+        self._response_stream = outgoing
+        self._rpc._open_outgoing(outgoing)
+        self._rpc._send(encode_response(self.id, stream=_OPEN))
         return outgoing
+
+    async def _fail(self, error):
+        if self._response_stream is not None:
+            self._response_stream.destroy(_remote_error(error))
+        elif not self._sent:
+            await self.reject(error)

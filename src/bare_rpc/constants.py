@@ -1,4 +1,7 @@
-class Type:
+from enum import IntEnum, IntFlag
+
+
+class Type(IntEnum):
     """Message type tags, the first field of every frame body."""
 
     REQUEST = 1
@@ -11,7 +14,7 @@ class Type:
     """A frame on an open stream."""
 
 
-class StreamFlag:
+class StreamFlag(IntFlag):
     """Bits of the ``stream`` and ``flags`` fields.
 
     The low byte names the stream action and ``REQUEST`` and ``RESPONSE`` mark
@@ -47,3 +50,17 @@ class StreamFlag:
 
     RESPONSE = 0x200
     """The frame flows in the response direction."""
+
+
+# Plain ints for the frame path, since every operation on an IntFlag runs
+# Python-level enum code.
+_OPEN = int(StreamFlag.OPEN)
+_CLOSE = int(StreamFlag.CLOSE)
+_PAUSE = int(StreamFlag.PAUSE)
+_RESUME = int(StreamFlag.RESUME)
+_DATA = int(StreamFlag.DATA)
+_END = int(StreamFlag.END)
+_DESTROY = int(StreamFlag.DESTROY)
+_ERROR = int(StreamFlag.ERROR)
+_REQUEST = int(StreamFlag.REQUEST)
+_RESPONSE = int(StreamFlag.RESPONSE)

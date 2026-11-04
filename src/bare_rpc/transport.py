@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Awaitable
 from contextlib import suppress
 from typing import Protocol
@@ -24,18 +25,20 @@ class StreamTransport:
     """A ``Transport`` over an asyncio ``StreamReader`` and ``StreamWriter``,
     such as those returned by ``asyncio.open_connection()``."""
 
-    def __init__(self, reader, writer):
+    def __init__(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
         self._reader = reader
         self._writer = writer
 
-    async def read(self, n=65536):
+    async def read(self, n: int = 65536) -> bytes:
         return await self._reader.read(n)
 
-    async def write(self, data):
+    async def write(self, data: bytes) -> None:
         self._writer.write(data)
         await self._writer.drain()
 
-    async def close(self):
+    async def close(self) -> None:
         self._writer.close()
 
         # The connection may already have been reset by the peer.

@@ -9,6 +9,7 @@ class FakeRPC:
     def __init__(self):
         self.sent = []
         self._incoming_streams = {}
+        self._max_buffered_bytes = 2**24
 
     def _send(self, frame):
         self.sent.append(frame)
@@ -19,14 +20,14 @@ def test_iterates_buffered_then_ends():
 
     async def body():
         s = IncomingStream(host, 7, StreamFlag.RESPONSE)
-        host._incoming_streams[7] = s
-        s.push(b"a")
-        s.push(b"b")
-        s.end()
+        host._incoming_streams[(7, StreamFlag.RESPONSE)] = s
+        s._push(b"a")
+        s._push(b"b")
+        s._end()
         return [chunk async for chunk in s]
 
     assert asyncio.run(asyncio.wait_for(body(), 2)) == [b"a", b"b"]
-    assert 7 not in host._incoming_streams
+    assert (7, StreamFlag.RESPONSE) not in host._incoming_streams
 
 
 def test_parked_consumer_gets_direct_handoff():
@@ -40,37 +41,41 @@ def test_parked_consumer_gets_direct_handoff():
             async for chunk in s:
                 got.append(chunk)
 
-        task = asyncio.ensure_future(consume())
+        task = asyncio.create_task(consume())
         await asyncio.sleep(0)  # consumer parks on an empty buffer
-        s.push(b"x")
+        s._push(b"x")
         await asyncio.sleep(0)
-        s.end()
+        s._end()
         await task
         return got
 
     assert asyncio.run(asyncio.wait_for(body(), 2)) == [b"x"]
 
 
-def test_pause_at_high_water_and_resume_on_drain():
+def test_pause_at_high_water_bytes_and_resume_below_it():
     host = FakeRPC()
+    chunk = bytes(HIGH_WATER_MARK // 4)
+
+    def flags():
+        return [rpc.decode_frame(f).flags for f in host.sent]
 
     async def body():
         s = IncomingStream(host, 7, StreamFlag.RESPONSE)
-        for i in range(HIGH_WATER_MARK):
-            s.push(bytes([i]))
-        paused = [rpc.decode_frame(f).flags for f in host.sent]
-        # drain below the low-water mark
-        out = []
-        async for chunk in s:
-            out.append(chunk)
-            if len(out) == HIGH_WATER_MARK:
-                s.end()
-        resumed = [rpc.decode_frame(f).flags for f in host.sent]
-        return paused, resumed
+        for _ in range(3):
+            s._push(chunk)
+        below = flags()
+        s._push(chunk)
+        paused = flags()
+        await s.read()
+        return below, paused, flags()
 
-    paused, resumed = asyncio.run(asyncio.wait_for(body(), 2))
-    assert (StreamFlag.RESPONSE | StreamFlag.PAUSE) in paused
-    assert (StreamFlag.RESPONSE | StreamFlag.RESUME) in resumed
+    below, paused, resumed = asyncio.run(asyncio.wait_for(body(), 2))
+    assert below == []
+    assert paused == [StreamFlag.RESPONSE | StreamFlag.PAUSE]
+    assert resumed == [
+        StreamFlag.RESPONSE | StreamFlag.PAUSE,
+        StreamFlag.RESPONSE | StreamFlag.RESUME,
+    ]
 
 
 def test_destroy_with_error_raises_from_iterator():
@@ -83,7 +88,7 @@ def test_destroy_with_error_raises_from_iterator():
             async for _ in s:
                 pass
 
-        task = asyncio.ensure_future(consume())
+        task = asyncio.create_task(consume())
         await asyncio.sleep(0)  # consumer parks on the empty buffer
         s.destroy(RPCRemoteError("gone", "E", 2))
         raised = None

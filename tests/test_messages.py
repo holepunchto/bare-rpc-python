@@ -1,3 +1,6 @@
+import contextlib
+import pickle
+
 import compact_encoding as cenc
 import pytest
 
@@ -58,6 +61,12 @@ def test_decode_truncated_frame_raises():
     # length 4 declared, no body bytes
     with pytest.raises(cenc.OutOfBounds):
         rpc.decode_frame(bytes.fromhex("04000000"))
+
+
+def test_decode_payload_past_the_frame_raises():
+    # length 5, request id 1 command 5 with a payload of 5 bytes after the frame
+    with pytest.raises(cenc.OutOfBounds):
+        rpc.decode_frame(bytes.fromhex("050000000101050005") + b"abcde")
 
 
 def test_encode_response_success_matches_fixture():
@@ -137,12 +146,21 @@ def test_encode_stream_data_flag_without_data_encodes_empty_buffer():
 
 def test_rpc_remote_error_is_usable_as_exception():
     err = RPCRemoteError(message="boom", code="BAD", errno=400)
-    assert isinstance(err, Exception)
-    # dataclass equality is preserved
-    assert err == RPCRemoteError(message="boom", code="BAD", errno=400)
-    # raisable and fields survive
+    assert isinstance(err, rpc.RPCError)
+    assert str(err) == "boom"
+    assert err == RPCRemoteError("boom", "BAD", 400)
+    assert pickle.loads(pickle.dumps(err)) == err
+
+    @contextlib.contextmanager
+    def passthrough():
+        yield
+
     with pytest.raises(RPCRemoteError) as excinfo:
-        raise err
-    assert excinfo.value.message == "boom"
-    assert excinfo.value.code == "BAD"
-    assert excinfo.value.errno == 400
+        with passthrough():
+            raise err
+    assert excinfo.value is err
+
+
+def test_decoded_remote_error_has_its_message_as_str():
+    frame = rpc.encode_error_response(1, "boom", "BAD", 400)
+    assert str(rpc.decode_frame(frame).error) == "boom"

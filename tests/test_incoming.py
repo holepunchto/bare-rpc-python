@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 import bare_rpc as rpc
 from bare_rpc import ResponseMessage, RPCRemoteError
 from bare_rpc.incoming import IncomingEvent, IncomingRequest
@@ -8,6 +10,9 @@ from bare_rpc.incoming import IncomingEvent, IncomingRequest
 class FakeRPC:
     def __init__(self):
         self.sent = []
+
+    def _on_answered(self, id):
+        return False
 
     def _send(self, frame):
         self.sent.append(frame)
@@ -62,14 +67,21 @@ def test_incoming_request_reject_from_rpc_remote_error():
     assert rpc.decode_frame(fake.sent[0]).error == RPCRemoteError("nope", "NO", 7)
 
 
-def test_incoming_request_replies_once():
+@pytest.mark.parametrize("first", ["reply", "reject"])
+def test_a_second_reply_raises_already_sent(first):
     fake = FakeRPC()
 
     async def body():
         req = IncomingRequest(fake, 4, 0, None)
-        await req.reply(b"a")
-        await req.reply(b"b")  # no-op
-        await req.reject(Exception("x"))  # no-op
+        if first == "reply":
+            await req.reply(b"a")
+        else:
+            await req.reject(Exception("x"))
+        with pytest.raises(rpc.RPCError) as err:
+            await req.reply(b"b")
+        return req.sent, err.value
 
-    asyncio.run(body())
+    sent, error = asyncio.run(body())
+    assert sent
+    assert error.code == "ALREADY_SENT"
     assert len(fake.sent) == 1

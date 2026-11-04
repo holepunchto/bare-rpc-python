@@ -8,49 +8,9 @@ pip install bare-rpc
 
 [hrpc-python](https://github.com/holepunchto/hrpc-python) generates typed clients and servers on top of it. Use it directly for the raw transport.
 
-## Wire codec
+## Usage
 
-Encode and decode frames without the runtime:
-
-```python
-import bare_rpc as rpc
-
-frame = rpc.encode_request(1, 42, data=b"hi")  # -> bytes
-msg = rpc.decode_frame(frame)  # -> RequestMessage(id=1, command=42, ...)
-```
-
-## RPC runtime
-
-`RPC` runs a session over a `Transport`: Any object with an async `read()`, returning `b""` once it has ended, an async `write(data)`, and `close()`. A `Sidecar` from [bare-sidecar-python](https://github.com/holepunchto/bare-sidecar-python) is one:
-
-```python
-import asyncio
-
-from bare_rpc import RPC
-from bare_sidecar import spawn
-
-
-async def main():
-    sidecar = await spawn("app.js")
-
-    async with RPC(sidecar) as rpc:
-        print(await rpc.request(1, b"ping"))
-
-        await rpc.event(2, b"note")
-
-
-asyncio.run(main())
-```
-
-Where `app.js` serves the requests with [bare-rpc](https://github.com/holepunchto/bare-rpc):
-
-```js
-const RPC = require("bare-rpc");
-
-new RPC(Bare.IPC, (req) => req.reply("pong"));
-```
-
-For a socket or any other asyncio stream, wrap its reader and writer in a `StreamTransport`:
+This example runs two peers over a TCP connection and makes one request:
 
 ```python
 import asyncio
@@ -58,90 +18,131 @@ import asyncio
 from bare_rpc import RPC, StreamTransport
 
 
-async def main():
-    reader, writer = await asyncio.open_connection("localhost", 8080)
-
-    async with RPC(StreamTransport(reader, writer)) as rpc:
-        print(await rpc.request(1, b"ping"))
-```
-
-The session closes once the transport ends, and closing it closes the transport. Pass `on_request` and `on_event` to answer requests and receive events from the peer:
-
-```python
-async def on_request(req):
+async def pong(req):
     await req.reply(b"pong")
 
 
-rpc = RPC(transport, on_request=on_request)
+async def serve(reader, writer):
+    await RPC(StreamTransport(reader, writer), on_request=pong).wait()
+
+
+async def main():
+    server = await asyncio.start_server(serve, "localhost", 8080)
+
+    reader, writer = await asyncio.open_connection("localhost", 8080)
+
+    async with RPC(StreamTransport(reader, writer)) as rpc:
+        print(await rpc.request(1, b"ping"))  # b'pong'
+
+    server.close()
+
+
+asyncio.run(main())
 ```
+
+`RPC` runs a session over a `Transport`. A `Transport` is any object with an async `read()`, which returns `b""` once it has ended, an async `write(data)`, and `close()`. A `Sidecar` from [bare-sidecar-python](https://github.com/holepunchto/bare-sidecar-python) is a transport. `StreamTransport` builds one from the reader and writer of a socket or any other asyncio stream. The session must be created while an event loop is running.
 
 ## Command routing
 
-`CommandRouter` sends each request and event to the handler registered for its command. Pass its `dispatch_request` and `dispatch_event` to `RPC`:
+A `CommandRouter` sends each request and event to the handler registered for its command. Pass it to `RPC` as `handler`:
 
 ```python
-router = rpc.CommandRouter()
+from bare_rpc import RPC, CommandRouter
 
+router = CommandRouter()
 
-async def ping(req):
-    return b"pong"
+router.on_request(1, lambda req: b"pong")
+router.on_event(2, lambda event: print(event.command))
 
-
-router.on_request(5, ping)
-router.on_event(3, lambda event: print(event.data))
-
-server = rpc.RPC(
-    transport,
-    on_request=router.dispatch_request,
-    on_event=router.dispatch_event,
-)
+rpc = RPC(transport, handler=router)
 ```
 
-## Streams and backpressure
+A request handler returns the payload to reply with, unless it has answered the request itself. Either kind of handler may be async. A request for a command with no handler is rejected with the code `UNKNOWN_COMMAND`. An event for a command with no handler is dropped.
 
-All three streaming shapes are implemented, with backpressure.
+`CommandRouter` is a `Handler`. You can write your own `Handler` instead, with `handle_request(req)` and `handle_event(event)`. A subclass of `Handler` only needs to define the methods it uses. By default, requests are rejected with the code `UNKNOWN_COMMAND` and events are dropped. Passing `handler` together with `on_request` or `on_event` raises `ValueError`.
 
-Incoming streams are read with `async for`, or a chunk at a time with `await stream.read()`, which returns `None` once the peer has ended the stream.
+## Requests and responses
 
-Response stream (server streams back, client reads):
+`await rpc.request(command, data)` sends a request and returns its reply. `await rpc.event(command, data)` sends an event, which gets no reply. Each request and event of the peer is handled in its own task, so a slow handler does not hold back the others.
+
+A request is answered once, with `reply()`, `reject()` or `create_response_stream()`. Answering again raises an `RPCError` with the code `ALREADY_SENT`, and `req.sent` tells whether the request has been answered.
+
+If a request handler raises before it answers, the request is rejected with the exception. An `RPCRemoteError` is sent as is. Any other exception is sent with `str(error)` as the message, and its `code` and `errno` attributes if it has them, or an empty code and errno 0. If the handler had opened a response stream, the stream is destroyed with the exception instead.
+
+When the peer rejects a request, `request()` raises an `RPCRemoteError` with the `message`, `code` and `errno` of the peer. It is a subclass of `RPCError`, so `except RPCError` catches every error of the session.
+
+Without `on_request`, every request is rejected with the code `UNKNOWN_COMMAND`. Without `on_event`, events are dropped.
+
+## Streaming requests and responses
+
+A request can stream its body, its reply, or both:
+
+- `stream_request(command)` returns an `OutgoingStream` for the body and a future of the reply.
+- `request_with_response_stream(command, data)` sends a plain request and returns an `IncomingStream` for the reply.
+- `create_bidirectional_stream(command)` returns an `OutgoingStream` for the body and an `IncomingStream` for the reply.
+
+On the answering side, `req.request_stream` is the `IncomingStream` of the body, or `None` if the request has none, and `create_response_stream()` returns an `OutgoingStream` for the reply. This handler echoes the body back:
 
 ```python
-async def on_request(req):
+async def echo(req):
     out = await req.create_response_stream()
-    await out.write(b"chunk-1")
-    await out.write(b"chunk-2")
+
+    async for chunk in req.request_stream:
+        await out.write(chunk)
+
     await out.end()
 
 
-incoming = await client.request_with_response_stream(command=5, data=b"go")
-async for chunk in incoming:
-    ...
-```
-
-Request stream (client streams up, server reads, then replies):
-
-```python
-async def on_request(req):
-    async for chunk in req.request_stream:
-        ...
-    await req.reply(b"done")
-
-
-out, reply = await client.stream_request(command=6)
-await out.write(b"chunk-1")
-await out.end()
-result = await reply  # -> b"done"
-```
-
-Duplex (both directions):
-
-```python
-out, incoming = await client.create_bidirectional_stream(command=7)
+out, incoming = await client.create_bidirectional_stream(1)
 await out.write(b"ping")
 await out.end()
+
 async for chunk in incoming:
-    ...
+    print(chunk)  # b'ping'
 ```
+
+A stream only carries data once both ends have opened it, so `write()` and `end()` wait until the peer has opened its end. The handler opens the body when it first reads `req.request_stream`. If the peer answers before it opens the body, the body is not sent, and later writes and `end()` do nothing. A write after `end()` is dropped, and a write after `destroy()` raises `RuntimeError`.
+
+An `IncomingStream` asks the peer to pause once it buffers 16 KiB, and to resume once less than that is buffered. While the peer has paused an `OutgoingStream`, `write()` waits. If the peer keeps sending anyway, an incoming stream holds at most `max_buffered_bytes`, 16 MiB by default, before the session fails with an `RPCError` with the code `STREAM_OVERFLOW`.
+
+Read an `IncomingStream` with `async for`, or one chunk at a time with `await stream.read()`, which returns `None` once the peer has ended the stream. Reading `req.request_stream` again returns the same stream, and calling `read()` while another `read()` is waiting raises `RuntimeError`.
+
+## Termination
+
+The session ends with an `RPCError` with the code `CHANNEL_CLOSED` when you call `close()`, leave `async with`, or the transport ends. It fails with an error instead when:
+
+- The transport ends partway through a frame, with the code `INVALID_MESSAGE`.
+- Reading from or writing to the transport raises, with that error.
+- An event handler raises, with that error.
+- The peer sends a bad frame, as described under [Untrusted peers](#untrusted-peers).
+
+Pending requests and streams then fail with the error, and so do later requests and writes. Events sent after the end are dropped. If you passed `on_error`, it is called with the error that failed the session.
+
+The session then closes the transport. If it ended with `CHANNEL_CLOSED`, it first writes the frames already queued. Otherwise it drops them.
+
+`close()` waits for the transport to close. `wait()` waits for the session to end. It returns if the session ended with `CHANNEL_CLOSED`, and raises the error otherwise:
+
+```python
+try:
+    await rpc.wait()
+except Exception as error:
+    print(f"The session failed: {error}")
+```
+
+## Untrusted peers
+
+`RPC` does not trust the peer to send valid frames. If a frame is larger than `max_frame_size`, cannot be decoded, or breaks the protocol, the session fails with an `RPCError`. The code tells you why:
+
+- `FRAME_TOO_LARGE`: The frame, with its 4-byte length prefix, is larger than `max_frame_size`. This is checked as soon as the length prefix arrives, before the rest of the frame is read.
+- `UNKNOWN_MESSAGE`: The frame has a message type that `RPC` does not know.
+- `INVALID_MESSAGE`: The frame cannot be decoded, the transport ends partway through a frame, or the frame is one that a valid peer never sends. Examples are a response or stream message with an id of 0, a stream message with an invalid set of flags, and a new request that reuses the id of a request that is still in flight.
+- `STREAM_OVERFLOW`: An incoming stream holds more than `max_buffered_bytes` of data that has not been read. This only happens when the peer keeps sending after it was asked to pause.
+
+A frame that refers to a request or stream that has already finished, or that was never known, is ignored. The same goes for frames that arrive for a stream that has already ended or been destroyed.
+
+If you read the reply as a stream but the peer replies without one, the reply arrives on the stream as a single chunk, unless it is empty, and the stream then ends. An error reply makes the call raise the error instead of returning a stream.
+
+If you expect a plain reply but the peer replies with a stream, the call raises an `RPCError` with the code `UNEXPECTED_STREAM`. The session destroys the stream toward the peer and stays open.
 
 ## License
 

@@ -1,29 +1,35 @@
-from .messages import RPCRemoteError
+from collections.abc import Awaitable, Callable
+
+from .handler import Handler
+from .incoming import IncomingEvent, IncomingRequest, _unknown_command
 from .rpc import _maybe_await
 
+_RequestHandler = Callable[[IncomingRequest], bytes | None | Awaitable[bytes | None]]
+_EventHandler = Callable[[IncomingEvent], Awaitable[None] | None]
 
-class CommandRouter:
-    """Sends each request and event to the handler registered for its command.
 
-    Pass ``dispatch_request`` and ``dispatch_event`` to ``RPC`` as
-    ``on_request`` and ``on_event``.
+class CommandRouter(Handler):
+    """A ``Handler`` that sends each request and event to the handler
+    registered for its command.
+
+    Pass it to ``RPC`` as ``handler``.
     """
 
-    def __init__(self):
-        self._request_handlers = {}
-        self._event_handlers = {}
+    def __init__(self) -> None:
+        self._request_handlers: dict[int, _RequestHandler] = {}
+        self._event_handlers: dict[int, _EventHandler] = {}
 
-    def on_request(self, command, handler):
+    def on_request(self, command: int, handler: _RequestHandler) -> None:
         """Answer requests for ``command`` with ``handler``, replacing any
         handler registered for it.
 
         ``handler`` is called with the ``IncomingRequest`` and returns the
-        payload to reply with, unless it already answered the request. It may
-        be a coroutine function.
+        payload to reply with, unless it answers the request itself. It may be
+        a coroutine function.
         """
         self._request_handlers[command] = handler
 
-    def on_event(self, command, handler):
+    def on_event(self, command: int, handler: _EventHandler) -> None:
         """Deliver events for ``command`` to ``handler``, replacing any handler
         registered for it.
 
@@ -32,22 +38,23 @@ class CommandRouter:
         """
         self._event_handlers[command] = handler
 
-    async def dispatch_request(self, request):
+    async def handle_request(self, request: IncomingRequest) -> None:
         """Answer ``request`` with the handler for its command.
 
-        Raises ``RPCRemoteError`` with code ``ERR_UNKNOWN_COMMAND`` if no
+        Raises ``RPCRemoteError`` with code ``UNKNOWN_COMMAND`` if no
         handler is registered for it.
         """
         handler = self._request_handlers.get(request.command)
 
         if handler is None:
-            raise RPCRemoteError(
-                f"Unknown command {request.command}", "ERR_UNKNOWN_COMMAND", 0
-            )
+            raise _unknown_command(request.command)
 
-        await request.reply(await _maybe_await(handler(request)))
+        result = await _maybe_await(handler(request))
 
-    async def dispatch_event(self, event):
+        if not request.sent:
+            await request.reply(result)
+
+    async def handle_event(self, event: IncomingEvent) -> None:
         """Deliver ``event`` to the handler for its command, or drop it if
         there is none."""
         handler = self._event_handlers.get(event.command)

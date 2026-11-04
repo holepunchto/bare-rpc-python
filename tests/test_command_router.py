@@ -9,7 +9,7 @@ from pipe import pair
 def make_pair(router):
     left, right = pair()
 
-    RPC(right, on_request=router.dispatch_request, on_event=router.dispatch_event)
+    RPC(right, handler=router)
     return RPC(left)
 
 
@@ -61,6 +61,30 @@ def test_replaces_a_registered_handler():
     assert asyncio.run(body()) == b"new"
 
 
+def test_does_not_answer_again_when_the_handler_answers_itself():
+    router = CommandRouter()
+    errors = []
+
+    async def answer(req):
+        await req.reply(b"answered")
+
+    router.on_request(1, answer)
+
+    async def on_request(req):
+        try:
+            await router.handle_request(req)
+        except Exception as exc:
+            errors.append(exc)
+
+    async def body():
+        left, right = pair()
+        RPC(right, on_request=on_request)
+        return await RPC(left).request(1)
+
+    assert asyncio.run(asyncio.wait_for(body(), 2)) == b"answered"
+    assert errors == []
+
+
 def test_rejects_when_the_handler_raises():
     router = CommandRouter()
 
@@ -91,7 +115,7 @@ def test_rejects_unknown_commands():
     with pytest.raises(RPCRemoteError) as err:
         asyncio.run(body())
 
-    assert err.value.code == "ERR_UNKNOWN_COMMAND"
+    assert err.value.code == "UNKNOWN_COMMAND"
 
 
 def test_delivers_events_to_the_handler():
@@ -125,3 +149,11 @@ def test_drops_unknown_events():
     asyncio.run(body())
 
     assert seen == [3]
+
+
+def test_a_handler_and_callbacks_together_raise():
+    async def body():
+        with pytest.raises(ValueError):
+            RPC(pair()[0], handler=CommandRouter(), on_event=lambda event: None)
+
+    asyncio.run(body())
