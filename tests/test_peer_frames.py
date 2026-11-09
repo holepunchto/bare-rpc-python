@@ -11,6 +11,7 @@ from bare_rpc import (
     StreamFlag,
     StreamMessage,
     decode_frame,
+    encode_cancel,
     encode_error_response,
     encode_request,
     encode_response,
@@ -1069,3 +1070,87 @@ def test_pending_and_later_writes_raise_the_error_that_failed_the_session():
     pending, later, errors = asyncio.run(asyncio.wait_for(body(), 2))
     assert pending.code == "UNKNOWN_MESSAGE"
     assert pending is later is errors[0]
+
+
+def test_a_cancel_with_id_0_fails_the_session():
+    error = failure_of(encode_cancel(0, ERROR))
+    assert error.code == "INVALID_MESSAGE"
+
+
+def test_a_cancel_for_an_unknown_request_is_ignored():
+    assert_ignored(encode_cancel(7, ERROR))
+
+
+def test_a_cancelled_request_is_not_answered():
+    writes = []
+
+    async def on_request(req):
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            pass
+        if req.command == 1:
+            await req.reply(b"late")
+        elif req.command == 2:
+            stream = await req.create_response_stream()
+            try:
+                await stream.write(b"late")
+            except RuntimeError as exc:
+                writes.append(exc)
+        else:
+            raise RuntimeError("Late")
+
+    async def body():
+        session = Session(on_request=on_request)
+        for request_id in (1, 2, 3):
+            await session.feed(encode_request(request_id, request_id))
+            await session.feed(encode_cancel(request_id, ERROR))
+        written = list(session.local.written)
+        state = session.state()
+        await session.rpc.close()
+        return written, state
+
+    written, state = asyncio.run(asyncio.wait_for(body(), 2))
+    assert written == []
+    assert all(len(entries) == 0 for entries in state)
+    assert len(writes) == 1
+
+
+def test_a_cancel_ends_the_streams_of_the_request_without_frames():
+    read = []
+    drains = []
+
+    async def drain(req, stream):
+        try:
+            async for _ in req.request_stream:
+                pass
+        except RPCRemoteError as exc:
+            read.append(exc)
+        try:
+            await stream.write(b"late")
+        except RuntimeError as exc:
+            read.append(exc)
+
+    async def on_request(req):
+        stream = await req.create_response_stream()
+        drains.append(asyncio.create_task(drain(req, stream)))
+
+    async def body():
+        session = Session(on_request=on_request)
+        await session.feed(
+            encode_request(1, 1, stream=StreamFlag.OPEN),
+            encode_stream(1, RESPONSE | StreamFlag.OPEN),
+        )
+        before = len(session.local.written)
+        await session.feed(encode_cancel(1, ERROR))
+        await asyncio.gather(*drains)
+        after = len(session.local.written)
+        state = session.state()
+        await session.rpc.close()
+        return before, after, state
+
+    before, after, state = asyncio.run(asyncio.wait_for(body(), 2))
+    assert before == after
+    assert all(len(entries) == 0 for entries in state)
+    assert read[0] == ERROR
+    assert isinstance(read[1], RuntimeError)

@@ -48,6 +48,7 @@ class IncomingRequest:
         self._request_stream = None
         self._response_stream = None
         self._sent = False
+        self._cancellation_error = None
 
     @property
     def request_stream(self) -> IncomingStream | None:
@@ -59,7 +60,9 @@ class IncomingRequest:
         the same stream.
         """
         if self._streamed and self._request_stream is None:
-            self._request_stream = self._rpc._open_request_stream(self.id)
+            self._request_stream = self._rpc._open_request_stream(
+                self.id, self._cancellation_error
+            )
         return self._request_stream
 
     @property
@@ -67,10 +70,22 @@ class IncomingRequest:
         """Whether the request has been answered."""
         return self._sent
 
+    @property
+    def cancellation_error(self) -> RPCRemoteError | None:
+        """The ``RPCRemoteError`` that the peer cancelled the request with, or
+        ``None`` if it has not.
+
+        Once the peer has cancelled the request, the task of its handler is
+        cancelled, and its streams end as if the peer had destroyed them with
+        this error. Answering it sends nothing.
+        """
+        return self._cancellation_error
+
     async def reply(self, data: bytes | None = None) -> None:
         """Answer the request with ``data``, or an empty payload if ``None``."""
         self._answer()
-        self._rpc._send(encode_response(self.id, data=data))
+        if self._cancellation_error is None:
+            self._rpc._send(encode_response(self.id, data=data))
 
     async def reject(self, error: Exception) -> None:
         """Answer the request with ``error``.
@@ -79,10 +94,11 @@ class IncomingRequest:
         ``str(error)`` as its message.
         """
         self._answer()
-        error = _remote_error(error)
-        self._rpc._send(
-            encode_error_response(self.id, error.message, error.code, error.errno)
-        )
+        if self._cancellation_error is None:
+            error = _remote_error(error)
+            self._rpc._send(
+                encode_error_response(self.id, error.message, error.code, error.errno)
+            )
 
     def _answer(self):
         if self._sent:
@@ -95,6 +111,9 @@ class IncomingRequest:
         ``OutgoingStream``."""
         outgoing = OutgoingStream(self._rpc, self.id, _RESPONSE, opened=self._answer())
         self._response_stream = outgoing
+        if self._cancellation_error is not None:
+            outgoing._drop()
+            return outgoing
         self._rpc._open_outgoing(outgoing)
         self._rpc._send(encode_response(self.id, stream=_OPEN))
         return outgoing

@@ -2,6 +2,7 @@ import asyncio
 import inspect
 from collections import deque
 from collections.abc import Awaitable, Callable
+from functools import partial
 
 from .constants import (
     _CLOSE,
@@ -19,12 +20,15 @@ from .handler import Handler
 from .incoming import IncomingEvent, IncomingRequest, _remote_error, _unknown_command
 from .incoming_stream import IncomingStream
 from .messages import (
+    CancelMessage,
     RequestMessage,
     ResponseMessage,
     RPCError,
+    RPCRemoteError,
     StreamMessage,
     UnknownMessageTypeError,
     decode_frame,
+    encode_cancel,
     encode_event,
     encode_request,
     encode_stream,
@@ -38,6 +42,9 @@ DEFAULT_MAX_BUFFERED_BYTES = 16 * 1024 * 1024
 _MAX_EARLY_OPENS = 1024
 
 _DIRECTIONS = _REQUEST | _RESPONSE
+
+_CANCELLED = RPCRemoteError("Request was cancelled", "CANCELLED")
+_TIMED_OUT = RPCRemoteError("Request timed out", "TIMEOUT")
 
 # The stream actions that a valid peer sends, from the encoders of the streams.
 _STREAM_ACTIONS = frozenset(
@@ -116,6 +123,14 @@ class RPC:
     Each side of a stream waits for the other to open its end before sending
     on it, and chunks that arrive for a stream before this side has opened it
     are dropped, as in bare-rpc.
+
+    Cancelling the future that a call waits for, as cancelling the task that
+    awaits it does, cancels the request: the peer is told to stop handling it,
+    and the streams of the request fail with an ``RPCError`` with code
+    ``CANCELLED``. When the peer cancels a request, the task of its handler is
+    cancelled, and ``IncomingRequest.cancellation_error`` holds the error the
+    peer cancelled it with. Once the session ends, the tasks of the handlers
+    that are still running are cancelled too.
     """
 
     def __init__(
@@ -158,7 +173,8 @@ class RPC:
         self._outgoing_streams = {}
         self._incoming_streams = {}
         self._pending_response_streams = {}
-        self._unanswered = set()
+        self._unanswered = {}
+        self._handlers = {}
         self._early_opens = set()
         self._highest_request_id = 0
         self._writer = loop.create_task(self._write_frames())
@@ -255,9 +271,14 @@ class RPC:
         self._id += 1
         return self._id
 
-    async def request(self, command: int, data: bytes | None = None) -> bytes:
+    async def request(
+        self, command: int, data: bytes | None = None, *, timeout: float | None = None
+    ) -> bytes:
         """Send a request for ``command`` with ``data``, or an empty payload if
         ``None``, and return the payload of the reply.
+
+        If no reply arrives within ``timeout`` seconds, the request is
+        cancelled and an ``RPCError`` with code ``TIMEOUT`` is raised.
 
         Raises ``RPCRemoteError`` if the peer rejects the request, an
         ``RPCError`` with code ``UNEXPECTED_STREAM`` if the peer answers with
@@ -265,10 +286,22 @@ class RPC:
         session is closed, and the error of the session if it has failed.
         """
         request_id = self._next_request_id()
-        future = asyncio.get_running_loop().create_future()
+        future = self._track(request_id)
         self._pending[request_id] = future
         self._send(encode_request(request_id, command, data=data))
-        return await future
+        if timeout is None:
+            return await future
+        timer = asyncio.get_running_loop().call_later(
+            timeout,
+            self._cancel_request,
+            request_id,
+            _TIMED_OUT,
+            RPCError("Request timed out", "TIMEOUT"),
+        )
+        try:
+            return await future
+        finally:
+            timer.cancel()
 
     async def request_with_response_stream(
         self, command: int, data: bytes | None = None
@@ -305,7 +338,7 @@ class RPC:
         and the error of the session if it has failed.
         """
         request_id = self._next_request_id()
-        future = asyncio.get_running_loop().create_future()
+        future = self._track(request_id)
         self._pending[request_id] = future
         outgoing = OutgoingStream(self, request_id, _REQUEST)
         self._open_outgoing(outgoing)
@@ -339,11 +372,40 @@ class RPC:
     # sends the request, as bare-rpc does, so that the peer can write to it
     # without another round trip.
     def _read_response_stream(self, request_id):
-        future = asyncio.get_running_loop().create_future()
+        future = self._track(request_id)
         incoming = IncomingStream(self, request_id, _RESPONSE)
         self._pending_response_streams[request_id] = (future, incoming)
         self._incoming_streams[(request_id, _RESPONSE)] = incoming
         return future
+
+    # A request whose future is cancelled before it is answered is cancelled at
+    # the peer too.
+    def _track(self, request_id):
+        future = asyncio.get_running_loop().create_future()
+        future.add_done_callback(partial(self._on_settled, request_id))
+        return future
+
+    def _on_settled(self, request_id, future):
+        if future.cancelled():
+            self._cancel_request(request_id, _CANCELLED)
+
+    def _cancel_request(self, request_id, reason, error=None):
+        future = self._pending.pop(request_id, None)
+        if future is None:
+            pending = self._pending_response_streams.pop(request_id, None)
+            if pending is None:
+                return
+            future, _ = pending
+        if error is not None and not future.done():
+            future.set_exception(error)
+        self._send(encode_cancel(request_id, reason))
+        error = error or RPCError("Request was cancelled", "CANCELLED")
+        outgoing = self._outgoing_streams.get((request_id, _REQUEST))
+        if outgoing is not None:
+            outgoing._abort(error)
+        incoming = self._incoming_streams.pop((request_id, _RESPONSE), None)
+        if incoming is not None:
+            incoming._abort(error)
 
     def _open_outgoing(self, outgoing):
         if self._end_error is not None:
@@ -351,17 +413,18 @@ class RPC:
             return
         self._outgoing_streams[(outgoing._id, outgoing._mask)] = outgoing
 
-    def _open_request_stream(self, request_id):
+    def _open_request_stream(self, request_id, cancellation_error):
         incoming = IncomingStream(self, request_id, _REQUEST)
-        if self._end_error is not None:
-            incoming._abort(self._end_error)
+        error = self._end_error or cancellation_error
+        if error is not None:
+            incoming._abort(error)
             return incoming
         self._incoming_streams[(request_id, _REQUEST)] = incoming
         self._send(encode_stream(request_id, _REQUEST | _OPEN))
         return incoming
 
     def _on_answered(self, request_id):
-        self._unanswered.discard(request_id)
+        self._unanswered.pop(request_id, None)
         if request_id in self._early_opens:
             self._early_opens.discard(request_id)
             return True
@@ -418,8 +481,10 @@ class RPC:
                     message.data,
                     streamed=bool(message.stream & _OPEN),
                 )
-                self._unanswered.add(message.id)
-                self._spawn(self._run_request(req))
+                self._unanswered[message.id] = req
+                task = self._spawn(self._run_request(req))
+                self._handlers[message.id] = task
+                task.add_done_callback(partial(self._forget_handler, message.id))
         elif isinstance(message, ResponseMessage):
             if message.id == 0:
                 raise _invalid("Response with id 0")
@@ -427,6 +492,31 @@ class RPC:
             self._on_response(message)
         elif isinstance(message, StreamMessage):
             self._on_stream(message)
+        elif isinstance(message, CancelMessage):
+            if message.id == 0:
+                raise _invalid("Cancel with id 0")
+            self._on_cancel(message)
+
+    def _forget_handler(self, request_id, task):
+        if self._handlers.get(request_id) is task:
+            del self._handlers[request_id]
+
+    # The streams of the request end as a destroy of the peer would end them,
+    # but without frames, as the peer has dropped its end too.
+    def _on_cancel(self, message):
+        req = self._unanswered.pop(message.id, None)
+        if req is not None:
+            req._cancellation_error = message.error
+        self._early_opens.discard(message.id)
+        task = self._handlers.pop(message.id, None)
+        if task is not None:
+            task.cancel()
+        incoming = self._incoming_streams.pop((message.id, _REQUEST), None)
+        if incoming is not None:
+            incoming._abort(message.error)
+        outgoing = self._outgoing_streams.get((message.id, _RESPONSE))
+        if outgoing is not None:
+            outgoing._drop()
 
     def _on_response(self, message):
         if message.stream & _OPEN:
@@ -554,6 +644,7 @@ class RPC:
         task = asyncio.create_task(coro)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+        return task
 
     async def _run_request(self, req):
         try:
@@ -605,3 +696,7 @@ class RPC:
         self._incoming_streams.clear()
         self._unanswered.clear()
         self._early_opens.clear()
+        handlers = list(self._handlers.values())
+        self._handlers.clear()
+        for task in handlers:
+            task.cancel()

@@ -2,7 +2,13 @@ import compact_encoding as cenc
 import pytest
 
 import bare_rpc as rpc
-from bare_rpc import RequestMessage, ResponseMessage, RPCRemoteError, StreamMessage
+from bare_rpc import (
+    CancelMessage,
+    RequestMessage,
+    ResponseMessage,
+    RPCRemoteError,
+    StreamMessage,
+)
 from bare_rpc.constants import Type
 from wire_vectors import FAMILIES
 
@@ -56,6 +62,11 @@ def _encode_from_descriptor(descriptor):
         return rpc.encode_stream(
             descriptor["id"], flags, data=_descriptor_data(descriptor)
         )
+    if t == Type.CANCEL:
+        err = descriptor["error"]
+        return rpc.encode_cancel(
+            descriptor["id"], RPCRemoteError(err["message"], err["code"], err["errno"])
+        )
     raise AssertionError(f"unknown descriptor type {t}")
 
 
@@ -97,6 +108,15 @@ def _assert_decoded_matches(msg, descriptor):
         else:
             assert msg.error is None
             assert msg.data == _expected_decoded_data(descriptor)
+    elif t == Type.CANCEL:
+        assert isinstance(msg, CancelMessage)
+        assert msg.id == descriptor["id"]
+        err = descriptor["error"]
+        assert (msg.error.message, msg.error.code, msg.error.errno) == (
+            err["message"],
+            err["code"],
+            err["errno"],
+        )
     else:
         raise AssertionError(f"unknown descriptor type {t}")
 

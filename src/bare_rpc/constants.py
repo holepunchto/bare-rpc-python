@@ -13,6 +13,9 @@ class Type(IntEnum):
     STREAM = 3
     """A frame on an open stream."""
 
+    CANCEL = 4
+    """A cancel of a request, which tells the peer to stop handling it."""
+
 
 class StreamFlag(IntFlag):
     """Bits of the ``stream`` and ``flags`` fields.

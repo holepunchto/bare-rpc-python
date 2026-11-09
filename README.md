@@ -107,6 +107,31 @@ An `IncomingStream` asks the peer to pause once it buffers 16 KiB, and to resume
 
 Read an `IncomingStream` with `async for`, or one chunk at a time with `await stream.read()`, which returns `None` once the peer has ended the stream. Reading `req.request_stream` again returns the same stream, and calling `read()` while another `read()` is waiting raises `RuntimeError`.
 
+## Cancellation
+
+Cancelling the future that a call waits for cancels the request. Cancelling the task that awaits `request()`, `request_with_response_stream()` or `create_bidirectional_stream()` does that, and so does cancelling the `reply` future of `stream_request()`. The peer is told to stop handling the request, and the streams of the request fail with an `RPCError` with the code `CANCELLED`. Once the request has been answered, cancelling does nothing.
+
+`request()` also takes a `timeout` in seconds. If no reply arrives in time, the request is cancelled with the code `TIMEOUT`, and the call raises an `RPCError` with that code:
+
+```python
+reply = await rpc.request(1, b"ping", timeout=5)
+```
+
+A timeout from `asyncio.timeout()` or `asyncio.wait_for()` cancels the task instead, so the peer gets the code `CANCELLED`.
+
+On the answering side, a cancel of the peer cancels the task of the handler, so it sees `asyncio.CancelledError`. `request.cancellation_error` holds the `RPCRemoteError` that the peer cancelled with. The streams of the request end as if the peer had destroyed them with that error: reading the request stream raises it, and writing to the response stream raises `RuntimeError`. Answering the request sends nothing:
+
+```python
+async def on_request(request):
+    try:
+        await request.reply(await search(request.data))
+    except asyncio.CancelledError:
+        print("The peer cancelled with", request.cancellation_error.code)
+        raise
+```
+
+Cancelling a request needs a peer that supports it. A peer without support fails the session with the code `UNKNOWN_MESSAGE` when it receives a cancel.
+
 ## Termination
 
 The session ends with an `RPCError` with the code `CHANNEL_CLOSED` when you call `close()`, leave `async with`, or the transport ends. It fails with an error instead when:
@@ -116,7 +141,7 @@ The session ends with an `RPCError` with the code `CHANNEL_CLOSED` when you call
 - An event handler raises, with that error.
 - The peer sends a bad frame, as described under [Untrusted peers](#untrusted-peers).
 
-Pending requests and streams then fail with the error, and so do later requests and writes. Events sent after the end are dropped. If you passed `on_error`, it is called with the error that failed the session.
+Pending requests and streams then fail with the error, and so do later requests and writes. The tasks of running handlers are cancelled. Events sent after the end are dropped. If you passed `on_error`, it is called with the error that failed the session.
 
 The session then closes the transport. If it ended with `CHANNEL_CLOSED`, it first writes the frames already queued. Otherwise it drops them.
 
@@ -135,7 +160,7 @@ except Exception as error:
 
 - `FRAME_TOO_LARGE`: The frame, with its 4-byte length prefix, is larger than `max_frame_size`. This is checked as soon as the length prefix arrives, before the rest of the frame is read.
 - `UNKNOWN_MESSAGE`: The frame has a message type that `RPC` does not know.
-- `INVALID_MESSAGE`: The frame cannot be decoded, the transport ends partway through a frame, or the frame is one that a valid peer never sends. Examples are a response or stream message with an id of 0, a stream message with an invalid set of flags, and a new request that reuses the id of a request that is still in flight.
+- `INVALID_MESSAGE`: The frame cannot be decoded, the transport ends partway through a frame, or the frame is one that a valid peer never sends. Examples are a response, stream or cancel message with an id of 0, a stream message with an invalid set of flags, and a new request that reuses the id of a request that is still in flight.
 - `STREAM_OVERFLOW`: An incoming stream holds more than `max_buffered_bytes` of data that has not been read. This only happens when the peer keeps sending after it was asked to pause.
 
 A frame that refers to a request or stream that has already finished, or that was never known, is ignored. The same goes for frames that arrive for a stream that has already ended or been destroyed.
