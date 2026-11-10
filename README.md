@@ -109,7 +109,7 @@ Read an `IncomingStream` with `async for`, or one chunk at a time with `await st
 
 ## Cancellation
 
-Cancelling the future that a call waits for cancels the request. Cancelling the task that awaits `request()`, `request_with_response_stream()` or `create_bidirectional_stream()` does that, and so does cancelling the `reply` future of `stream_request()`. The peer is told to stop handling the request, and the streams of the request fail with an `RPCError` with the code `CANCELLED`. Once the request has been answered, cancelling does nothing.
+Cancelling the future that a call waits for cancels the request. Cancelling the task that awaits `request()`, `request_with_response_stream()` or `create_bidirectional_stream()` does that, and so does cancelling the `reply` future of `stream_request()`. The peer is told to stop handling the request, and the streams of the request fail with an `RPCError` with the code `CANCELLED`. Once the answer has arrived, cancelling does nothing. A request stream of `stream_request()` that is still open then stays open, so end or destroy it to stop it.
 
 `request()` also takes a `timeout` in seconds. If no reply arrives in time, the request is cancelled with the code `TIMEOUT`, and the call raises an `RPCError` with that code:
 
@@ -130,6 +130,8 @@ async def on_request(request):
             print("The peer cancelled with", request.cancellation_error.code)
         raise
 ```
+
+When the session ends, the tasks of the request and event handlers that are still running are cancelled too.
 
 Cancelling a request needs a peer that supports it. A peer without support fails the session with the code `UNKNOWN_MESSAGE` when it receives a cancel.
 
