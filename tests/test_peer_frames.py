@@ -1205,17 +1205,13 @@ def test_a_handler_that_replied_does_not_open_its_request_stream_after_a_cancel(
         session = Session(on_request=on_request)
         await session.feed(encode_request(1, 1, stream=StreamFlag.OPEN))
         await session.feed(encode_cancel(1, ERROR))
-        streams = [
-            message
-            for message in map(decode_frame, session.local.written)
-            if isinstance(message, StreamMessage)
-        ]
+        flags = stream_flags(session.local.written)
         await session.rpc.close()
-        return streams
+        return flags
 
-    streams = asyncio.run(asyncio.wait_for(body(), 2))
+    flags = asyncio.run(asyncio.wait_for(body(), 2))
     assert read == [ERROR]
-    assert streams == []
+    assert flags == []
 
 
 def test_a_cancel_that_crosses_the_open_of_a_response_stream_is_sent():

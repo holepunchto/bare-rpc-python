@@ -399,7 +399,7 @@ class RPC:
                 self._release_unreachable_streams(request_id)
             raise
 
-    # Once the answer has arrived, the request is not cancelled, and only the
+    # Once the response has ended, the request is not cancelled, and only the
     # request stream is left to close.
     def _release_unreachable_streams(self, request_id):
         if (request_id, _RESPONSE) in self._incoming_streams:
@@ -440,14 +440,14 @@ class RPC:
         self._send(encode_cancel(request_id, reason))
         outgoing = self._outgoing_streams.get((request_id, _REQUEST))
         if outgoing is not None:
-            outgoing._abort(error)
+            outgoing._close(error)
         incoming = self._incoming_streams.pop((request_id, _RESPONSE), None)
         if incoming is not None:
             incoming._abort(error)
 
     def _open_outgoing(self, outgoing):
         if self._end_error is not None:
-            outgoing._abort(self._end_error)
+            outgoing._close(self._end_error)
             return
         self._outgoing_streams[(outgoing._id, outgoing._mask)] = outgoing
 
@@ -759,7 +759,7 @@ class RPC:
                 future.set_exception(error)
         self._pending_response_streams.clear()
         for stream in list(self._outgoing_streams.values()):
-            stream._abort(error)
+            stream._close(error)
         self._outgoing_streams.clear()
         for stream in list(self._incoming_streams.values()):
             stream._abort(error)
