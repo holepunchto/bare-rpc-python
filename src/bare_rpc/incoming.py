@@ -60,9 +60,7 @@ class IncomingRequest:
         the same stream.
         """
         if self._streamed and self._request_stream is None:
-            self._request_stream = self._rpc._open_request_stream(
-                self.id, self._cancellation_error
-            )
+            self._request_stream = self._rpc._open_request_stream(self)
         return self._request_stream
 
     @property

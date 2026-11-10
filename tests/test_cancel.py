@@ -104,9 +104,34 @@ def test_cancelling_the_reply_of_a_streamed_request_fails_its_stream():
 def test_closing_the_session_cancels_the_handler():
     async def body():
         started = asyncio.Event()
-        cancelled = asyncio.Event()
+        observed = asyncio.get_running_loop().create_future()
 
         async def on_request(req):
+            started.set()
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                observed.set_result(req.cancellation_error)
+                raise
+
+        client, server, *_ = make_pair(on_request)
+        task = asyncio.create_task(client.request(1))
+        await started.wait()
+        await server.close()
+        error = await observed
+        with pytest.raises(RPCError):
+            await task
+        return error
+
+    assert asyncio.run(asyncio.wait_for(body(), 2)) is None
+
+
+def test_closing_the_session_cancels_the_event_handler():
+    async def body():
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def on_event(event):
             started.set()
             try:
                 await asyncio.sleep(10)
@@ -114,12 +139,38 @@ def test_closing_the_session_cancels_the_handler():
                 cancelled.set()
                 raise
 
-        client, server, *_ = make_pair(on_request)
-        task = asyncio.create_task(client.request(1))
+        left, right = pair()
+        client = RPC(left)
+        server = RPC(right, on_event=on_event)
+        await client.event(1)
         await started.wait()
         await server.close()
         await cancelled.wait()
-        with pytest.raises(RPCError):
-            await task
 
     asyncio.run(asyncio.wait_for(body(), 2))
+
+
+def test_a_handler_that_closes_the_session_is_cancelled_once_close_returns():
+    async def body():
+        steps = []
+        done = asyncio.Event()
+
+        async def on_request(req):
+            try:
+                await server.close()
+                steps.append("closed")
+                await asyncio.sleep(10)
+                steps.append("not cancelled")
+            except asyncio.CancelledError:
+                steps.append("cancelled")
+                raise
+            finally:
+                done.set()
+
+        client, server, *_ = make_pair(on_request)
+        task = asyncio.create_task(client.request(1))
+        await done.wait()
+        task.cancel()
+        return steps
+
+    assert asyncio.run(asyncio.wait_for(body(), 2)) == ["closed", "cancelled"]
