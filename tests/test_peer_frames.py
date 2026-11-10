@@ -1269,6 +1269,7 @@ def test_a_timeout_that_fires_after_the_reply_is_not_sent():
 def test_a_cancel_drops_the_answer_of_a_handler_that_already_returned():
     answered = asyncio.Event()
     observed = []
+    answers = []
 
     async def answer_later(req):
         await asyncio.sleep(0.05)
@@ -1277,7 +1278,7 @@ def test_a_cancel_drops_the_answer_of_a_handler_that_already_returned():
         answered.set()
 
     async def on_request(req):
-        observed.append(asyncio.create_task(answer_later(req)))
+        answers.append(asyncio.create_task(answer_later(req)))
 
     async def body():
         session = Session(on_request=on_request)
@@ -1289,4 +1290,81 @@ def test_a_cancel_drops_the_answer_of_a_handler_that_already_returned():
         return responses
 
     assert asyncio.run(asyncio.wait_for(body(), 2)) == []
-    assert observed[1] == ERROR
+    assert observed == [ERROR]
+
+
+def test_the_late_answer_of_a_cancelled_request_leaves_a_request_with_its_id():
+    gate = asyncio.Event()
+
+    async def on_request(req):
+        if req.data == b"old":
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                pass
+            await gate.wait()
+            await req.reply(b"late")
+        else:
+            await asyncio.sleep(10)
+
+    async def body():
+        session = Session(on_request=on_request)
+        await session.feed(encode_request(1, 1, data=b"old"))
+        await session.feed(encode_cancel(1, ERROR))
+        await session.feed(encode_request(1, 1, data=b"new"))
+        gate.set()
+        await settle()
+        await session.feed(encode_request(1, 1, data=b"again"))
+        await session.rpc.close()
+        return session.errors
+
+    errors = asyncio.run(asyncio.wait_for(body(), 2))
+    assert [error.code for error in errors] == ["INVALID_MESSAGE"]
+
+
+async def cancel_once_answered(session, task):
+    while session.rpc._pending_response_streams:
+        await asyncio.sleep(0)
+    task.cancel()
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        RPC.request_with_response_stream,
+        RPC.create_bidirectional_stream,
+    ],
+)
+def test_a_cancel_after_the_open_of_a_response_stream_releases_the_request(call):
+    async def body():
+        session = Session()
+        task = asyncio.create_task(call(session.rpc, 1))
+        await settle()
+        await session.peer.write(encode_response(1, stream=StreamFlag.OPEN))
+        await cancel_once_answered(session, task)
+        await settle()
+        state = session.state()
+        await session.rpc.close()
+        return task, cancels(session), state
+
+    task, sent, state = asyncio.run(asyncio.wait_for(body(), 2))
+    assert task.cancelled()
+    assert sent == [1]
+    assert all(len(entries) == 0 for entries in state)
+
+
+def test_cancelling_a_bidirectional_stream_aborts_both_of_its_streams():
+    async def body():
+        session = Session()
+        task = asyncio.create_task(session.rpc.create_bidirectional_stream(1))
+        await settle()
+        task.cancel()
+        await settle()
+        state = session.state()
+        await session.rpc.close()
+        return task, cancels(session), state
+
+    task, sent, state = asyncio.run(asyncio.wait_for(body(), 2))
+    assert task.cancelled()
+    assert sent == [1]
+    assert all(len(entries) == 0 for entries in state)

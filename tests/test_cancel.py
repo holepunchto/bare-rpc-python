@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from bare_rpc import RPC, CancelMessage, ResponseMessage, RPCError, decode_frame
-from pipe import pair
+from pipe import End, pair
 
 
 def make_pair(on_request):
@@ -174,3 +174,40 @@ def test_a_handler_that_closes_the_session_is_cancelled_once_close_returns():
         return steps
 
     assert asyncio.run(asyncio.wait_for(body(), 2)) == ["closed", "cancelled"]
+
+
+class FailingClose(End):
+    async def close(self):
+        await super().close()
+        raise OSError("Close failed")
+
+
+def test_a_handler_is_cancelled_when_the_close_it_awaits_raises():
+    async def body():
+        steps = []
+        done = asyncio.Event()
+
+        async def on_request(req):
+            try:
+                await server.close()
+            except OSError:
+                steps.append("close failed")
+            try:
+                await asyncio.sleep(10)
+                steps.append("not cancelled")
+            except asyncio.CancelledError:
+                steps.append("cancelled")
+                raise
+            finally:
+                done.set()
+
+        left, right = FailingClose(), End()
+        left.peer, right.peer = right, left
+        client = RPC(right)
+        server = RPC(left, on_request=on_request)
+        task = asyncio.create_task(client.request(1))
+        await done.wait()
+        task.cancel()
+        return steps
+
+    assert asyncio.run(asyncio.wait_for(body(), 2)) == ["close failed", "cancelled"]

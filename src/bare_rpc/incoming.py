@@ -102,6 +102,9 @@ class IncomingRequest:
         if self._sent:
             raise RPCError("Response has already been sent", "ALREADY_SENT")
         self._sent = True
+        # The peer may already reuse the id of a cancelled request.
+        if self._cancellation_error is not None:
+            return False
         return self._rpc._on_answered(self.id)
 
     async def create_response_stream(self) -> OutgoingStream:
