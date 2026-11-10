@@ -40,7 +40,7 @@ class IncomingStream:
         if self._buffer:
             chunk = self._buffer.popleft()
             self._buffered -= len(chunk)
-            if self._paused and self._buffered < HIGH_WATER_MARK:
+            if self._paused and not self._finished and self._buffered < HIGH_WATER_MARK:
                 self._paused = False
                 self._rpc._send(encode_stream(self._id, self._mask | _RESUME))
             return chunk

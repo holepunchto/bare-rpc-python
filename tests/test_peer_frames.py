@@ -18,6 +18,7 @@ from bare_rpc import (
     encode_response,
     encode_stream,
 )
+from bare_rpc.incoming_stream import HIGH_WATER_MARK
 from pipe import End, pair
 
 REQUEST = StreamFlag.REQUEST
@@ -1353,6 +1354,102 @@ def test_a_cancel_after_the_open_of_a_response_stream_releases_the_request(call)
     assert all(len(entries) == 0 for entries in state)
 
 
+def test_a_cancel_after_a_reply_to_a_bidirectional_stream_closes_the_request_stream():
+    async def body():
+        session = Session()
+        task = asyncio.create_task(session.rpc.create_bidirectional_stream(1))
+        await settle()
+        await session.feed(encode_stream(1, REQUEST | StreamFlag.OPEN))
+        before = len(session.local.written)
+        await session.peer.write(encode_response(1, data=b"ok"))
+        await cancel_once_answered(session, task)
+        await settle()
+        written = session.local.written[before:]
+        state = session.state()
+        await session.rpc.close()
+        return task, written, state
+
+    task, written, state = asyncio.run(asyncio.wait_for(body(), 2))
+    assert task.cancelled()
+    assert written == [encode_stream(1, REQUEST | StreamFlag.CLOSE)]
+    assert all(len(entries) == 0 for entries in state)
+
+
+def stream_flags(frames):
+    return [
+        message.flags
+        for message in map(decode_frame, frames)
+        if isinstance(message, StreamMessage)
+    ]
+
+
+def test_reading_a_paused_request_stream_after_a_cancel_does_not_resume_it():
+    chunk = bytes(HIGH_WATER_MARK)
+    read = []
+    reads = asyncio.Event()
+
+    async def on_request(req):
+        stream = req.request_stream
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            pass
+        read.append(await stream.read())
+        try:
+            await stream.read()
+        except RPCRemoteError as exc:
+            read.append(exc)
+        reads.set()
+
+    async def body():
+        session = Session(on_request=on_request, max_frame_size=2 * HIGH_WATER_MARK)
+        await session.feed(encode_request(1, 1, stream=StreamFlag.OPEN))
+        await session.feed(encode_stream(1, REQUEST | StreamFlag.DATA, data=chunk))
+        paused = stream_flags(session.local.written)
+        before = len(session.local.written)
+        await session.feed(encode_cancel(1, ERROR))
+        await reads.wait()
+        written = session.local.written[before:]
+        await session.rpc.close()
+        return paused, written
+
+    paused, written = asyncio.run(asyncio.wait_for(body(), 2))
+    assert paused == [REQUEST | StreamFlag.OPEN, REQUEST | StreamFlag.PAUSE]
+    assert written == []
+    assert read == [chunk, ERROR]
+
+
+def test_reading_a_paused_response_stream_after_a_cancel_does_not_resume_it():
+    chunk = bytes(HIGH_WATER_MARK)
+
+    async def body():
+        session = Session(max_frame_size=2 * HIGH_WATER_MARK)
+        task = asyncio.create_task(session.rpc.request_with_response_stream(1))
+        await settle()
+        stream = session.rpc._incoming_streams[(1, RESPONSE)]
+        await session.peer.write(encode_response(1, stream=StreamFlag.OPEN))
+        await session.peer.write(
+            encode_stream(1, RESPONSE | StreamFlag.DATA, data=chunk)
+        )
+        await cancel_once_answered(session, task)
+        await settle()
+        before = len(session.local.written)
+        read = [await stream.read()]
+        with pytest.raises(RPCError) as err:
+            await stream.read()
+        await settle()
+        written = session.local.written[before:]
+        flags = stream_flags(session.local.written[:before])
+        await session.rpc.close()
+        return read, err.value, flags, written
+
+    read, error, flags, written = asyncio.run(asyncio.wait_for(body(), 2))
+    assert read == [chunk]
+    assert error.code == "CANCELLED"
+    assert RESPONSE | StreamFlag.PAUSE in flags
+    assert written == []
+
+
 def test_cancelling_a_bidirectional_stream_aborts_both_of_its_streams():
     async def body():
         session = Session()
@@ -1437,14 +1534,32 @@ def test_a_cancel_that_crosses_the_reply_reaches_a_later_read_of_the_request_str
     assert errors == []
 
 
-def test_a_request_stream_that_the_peer_closes_unopened_ends_and_is_forgotten():
+@pytest.mark.parametrize(
+    "close, expected",
+    [
+        (encode_stream(1, REQUEST | StreamFlag.CLOSE), None),
+        (
+            encode_stream(
+                1, REQUEST | StreamFlag.CLOSE | StreamFlag.ERROR, error=ERROR
+            ),
+            ERROR,
+        ),
+    ],
+    ids=["end", "error"],
+)
+def test_a_request_stream_that_the_peer_closes_unopened_ends_and_is_forgotten(
+    close, expected
+):
     gate = asyncio.Event()
     read = []
     readers = []
 
     async def read_later(req):
         await gate.wait()
-        read.append(await req.request_stream.read())
+        try:
+            read.append(await req.request_stream.read())
+        except RPCRemoteError as exc:
+            read.append(exc)
 
     async def on_request(req):
         await req.reply(b"ok")
@@ -1452,10 +1567,7 @@ def test_a_request_stream_that_the_peer_closes_unopened_ends_and_is_forgotten():
 
     async def body():
         session = Session(on_request=on_request)
-        await session.feed(
-            encode_request(1, 1, stream=StreamFlag.OPEN),
-            encode_stream(1, REQUEST | StreamFlag.CLOSE),
-        )
+        await session.feed(encode_request(1, 1, stream=StreamFlag.OPEN), close)
         state = session.state()
         gate.set()
         await asyncio.gather(*readers)
@@ -1465,7 +1577,7 @@ def test_a_request_stream_that_the_peer_closes_unopened_ends_and_is_forgotten():
 
     state, written = asyncio.run(asyncio.wait_for(body(), 2))
     assert all(len(entries) == 0 for entries in state)
-    assert read == [None]
+    assert read == [expected]
     assert written == [encode_response(1, data=b"ok")]
 
 

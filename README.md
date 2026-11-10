@@ -146,7 +146,7 @@ The session ends with an `RPCError` with the code `CHANNEL_CLOSED` when you call
 - An event handler raises, with that error.
 - The peer sends a bad frame, as described under [Untrusted peers](#untrusted-peers).
 
-Pending requests and streams then fail with the error, and so do later requests and writes. The tasks of running request and event handlers are cancelled, and a handler that calls `close()` itself is cancelled once `close()` returns. Events sent after the end are dropped. If you passed `on_error`, it is called with the error that failed the session.
+Pending requests and streams then fail with the error, and so do later requests and writes. The tasks of running request and event handlers are cancelled, and a handler that awaits `close()` itself is cancelled once `close()` returns. A handler that awaits `close()` through `asyncio.shield()`, or through `asyncio.wait_for()` on Python 3.10 and 3.11, runs it in another task, so it is cancelled during the close instead. Events sent after the end are dropped. If you passed `on_error`, it is called with the error that failed the session.
 
 The session then closes the transport. If it ended with `CHANNEL_CLOSED`, it first writes the frames already queued. Otherwise it drops them.
 

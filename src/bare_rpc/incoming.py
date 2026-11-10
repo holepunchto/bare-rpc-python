@@ -84,8 +84,7 @@ class IncomingRequest:
     async def reply(self, data: bytes | None = None) -> None:
         """Answer the request with ``data``, or an empty payload if ``None``."""
         self._answer()
-        if self._cancellation_error is None:
-            self._rpc._send(encode_response(self.id, data=data))
+        self._send(encode_response(self.id, data=data))
 
     async def reject(self, error: Exception) -> None:
         """Answer the request with ``error``.
@@ -94,11 +93,14 @@ class IncomingRequest:
         ``str(error)`` as its message.
         """
         self._answer()
+        error = _remote_error(error)
+        self._send(
+            encode_error_response(self.id, error.message, error.code, error.errno)
+        )
+
+    def _send(self, frame):
         if self._cancellation_error is None:
-            error = _remote_error(error)
-            self._rpc._send(
-                encode_error_response(self.id, error.message, error.code, error.errno)
-            )
+            self._rpc._send(frame)
 
     def _answer(self):
         if self._sent:

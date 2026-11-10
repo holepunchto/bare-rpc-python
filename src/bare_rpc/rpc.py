@@ -131,7 +131,7 @@ class RPC:
     cancelled, and ``IncomingRequest.cancellation_error`` holds the error the
     peer cancelled it with. Once the session ends, the tasks of the request
     and event handlers that are still running are cancelled too. A handler
-    that calls ``close()`` itself is cancelled once ``close()`` returns.
+    that awaits ``close()`` itself is cancelled once ``close()`` returns.
     """
 
     def __init__(
@@ -238,8 +238,10 @@ class RPC:
         """
         if self._closing is None:
             self._closing = asyncio.create_task(self._close())
-        # A handler that closes the session is cancelled once close() returns,
-        # rather than while it waits for the close.
+        # A handler that awaits close() in its own task is cancelled once
+        # close() returns, rather than while it waits for the close. One that
+        # awaits it through another task, as asyncio.shield() does and
+        # asyncio.wait_for() does before Python 3.12, is cancelled during it.
         task = asyncio.current_task()
         self._closers.add(task)
         try:
@@ -393,18 +395,19 @@ class RPC:
         try:
             return await future
         except asyncio.CancelledError:
-            if (
-                not future.cancelled()
-                and future.exception() is None
-                and self._has_request_streams(request_id)
-            ):
-                self._abort_request(request_id, _CANCELLED)
+            if not future.cancelled() and future.exception() is None:
+                self._release_unreachable_streams(request_id)
             raise
 
-    def _has_request_streams(self, request_id):
-        return (request_id, _RESPONSE) in self._incoming_streams or (
-            (request_id, _REQUEST) in self._outgoing_streams
-        )
+    # Once the answer has arrived, the request is not cancelled, and only the
+    # request stream is left to close.
+    def _release_unreachable_streams(self, request_id):
+        if (request_id, _RESPONSE) in self._incoming_streams:
+            self._abort_request(request_id, _CANCELLED)
+            return
+        outgoing = self._outgoing_streams.get((request_id, _REQUEST))
+        if outgoing is not None:
+            outgoing.destroy()
 
     # A request whose future is cancelled before it is answered is cancelled at
     # the peer too.
@@ -418,15 +421,19 @@ class RPC:
             self._cancel_request(request_id, _CANCELLED)
 
     def _cancel_request(self, request_id, reason):
-        future = self._pending.pop(request_id, None)
+        future = self._pending_future(request_id, pop=True)
         if future is None:
-            pending = self._pending_response_streams.pop(request_id, None)
-            if pending is None:
-                return
-            future, _ = pending
+            return
         if not future.done():
             future.set_exception(RPCError(reason.message, reason.code))
         self._abort_request(request_id, reason)
+
+    def _pending_future(self, request_id, *, pop=False):
+        take = dict.pop if pop else dict.get
+        future = take(self._pending, request_id, None)
+        if future is None:
+            future, _ = take(self._pending_response_streams, request_id, (None, None))
+        return future
 
     def _abort_request(self, request_id, reason):
         error = RPCError(reason.message, reason.code)
@@ -561,9 +568,7 @@ class RPC:
     # A cancelled future is left for _on_settled, which cancels the request at
     # the peer and releases its streams once it runs.
     def _on_response(self, message):
-        future = self._pending.get(message.id)
-        if future is None:
-            future, _ = self._pending_response_streams.get(message.id, (None, None))
+        future = self._pending_future(message.id)
         if future is not None and future.cancelled():
             return
         if message.stream & _OPEN:
