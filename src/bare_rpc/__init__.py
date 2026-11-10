@@ -6,6 +6,7 @@ from .handler import Handler
 from .incoming import IncomingEvent, IncomingRequest
 from .incoming_stream import IncomingStream
 from .messages import (
+    CancelMessage,
     DecodedMessage,
     RequestMessage,
     ResponseMessage,
@@ -14,6 +15,7 @@ from .messages import (
     StreamMessage,
     UnknownMessageTypeError,
     decode_frame,
+    encode_cancel,
     encode_error_response,
     encode_event,
     encode_request,
@@ -25,6 +27,7 @@ from .rpc import RPC
 from .transport import StreamTransport, Transport
 
 __all__ = [
+    "CancelMessage",
     "CommandRouter",
     "DecodedMessage",
     "Handler",
@@ -44,6 +47,7 @@ __all__ = [
     "Type",
     "UnknownMessageTypeError",
     "decode_frame",
+    "encode_cancel",
     "encode_error_response",
     "encode_event",
     "encode_request",

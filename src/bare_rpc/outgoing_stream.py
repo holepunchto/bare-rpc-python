@@ -71,8 +71,7 @@ class OutgoingStream:
         """
         if self._phase is _CLOSED:
             return
-        ending = self._phase is _ENDING
-        self._send_close(error, None if ending else RuntimeError("Stream has ended"))
+        self._send_close(error, self._ended_error())
 
     def _release(self, error):
         self._send_close(error, None)
@@ -102,5 +101,10 @@ class OutgoingStream:
     def _open(self):
         self._opened.set()
 
-    def _abort(self, error):
-        self._close(error)
+    # Closes the stream as a destroy of the peer would, but without telling the
+    # peer, which has already dropped its end.
+    def _drop(self):
+        self._close(self._ended_error())
+
+    def _ended_error(self):
+        return None if self._phase is _ENDING else RuntimeError("Stream has ended")

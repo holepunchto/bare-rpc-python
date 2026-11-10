@@ -18,7 +18,9 @@ class RPCError(RuntimeError):
     ``CHANNEL_CLOSED`` once the session or its transport has closed,
     ``ALREADY_SENT`` when a request is answered twice, and
     ``UNEXPECTED_STREAM`` when the peer answers a plain request by opening a
-    response stream. A frame from the peer fails the session with
+    response stream, ``TIMEOUT`` when a request is not answered within its
+    timeout, and ``CANCELLED`` for the streams of a request whose call was
+    cancelled. A frame from the peer fails the session with
     ``FRAME_TOO_LARGE`` if it exceeds ``max_frame_size``, with
     ``UNKNOWN_MESSAGE`` if its message type is not one that ``Type`` defines,
     with ``STREAM_OVERFLOW`` if it overflows ``max_buffered_bytes`` of an
@@ -115,7 +117,16 @@ class StreamMessage:
     error: RPCRemoteError | None
 
 
-DecodedMessage = RequestMessage | ResponseMessage | StreamMessage
+@dataclass(frozen=True)
+class CancelMessage:
+    """A decoded cancel frame of the request with ``id``, carrying the
+    ``RPCRemoteError`` that the request is cancelled with."""
+
+    id: int
+    error: RPCRemoteError
+
+
+DecodedMessage = RequestMessage | ResponseMessage | StreamMessage | CancelMessage
 """A message returned by ``decode_frame``."""
 
 
@@ -314,9 +325,40 @@ def encode_stream(
     )
 
 
+def _preencode_cancel(state, msg):
+    cenc.uint.preencode(state, Type.CANCEL)
+    cenc.uint.preencode(state, msg.id)
+    cenc.utf8.preencode(state, msg.error.message)
+    cenc.utf8.preencode(state, msg.error.code)
+    cenc.int.preencode(state, msg.error.errno)
+
+
+def _encode_cancel(state, msg):
+    cenc.uint.encode(state, Type.CANCEL)
+    cenc.uint.encode(state, msg.id)
+    cenc.utf8.encode(state, msg.error.message)
+    cenc.utf8.encode(state, msg.error.code)
+    cenc.int.encode(state, msg.error.errno)
+
+
+def _decode_cancel(state):
+    id = cenc.uint.decode(state)
+    return CancelMessage(id=id, error=_decode_error(state))
+
+
+def encode_cancel(id: int, error: RPCRemoteError) -> bytes:
+    """Encode a cancel frame of the request with ``id``, including its length
+    prefix.
+
+    See ``RPCRemoteError`` for ``error``.
+    """
+    return _encode_frame(_preencode_cancel, _encode_cancel, CancelMessage(id, error))
+
+
 def decode_frame(frame: bytes) -> DecodedMessage:
     """Decode one frame, including its length prefix, to a
-    ``RequestMessage``, ``ResponseMessage``, or ``StreamMessage``.
+    ``RequestMessage``, ``ResponseMessage``, ``StreamMessage``, or
+    ``CancelMessage``.
 
     A field the frame does not carry decodes as ``None`` and an empty payload
     as ``b""``. Raises ``compact_encoding.OutOfBounds`` if the frame is
@@ -337,4 +379,6 @@ def decode_frame(frame: bytes) -> DecodedMessage:
         return _decode_response(state)
     if type_ == Type.STREAM:
         return _decode_stream(state)
+    if type_ == Type.CANCEL:
+        return _decode_cancel(state)
     raise UnknownMessageTypeError(f"Unknown message type {type_}")

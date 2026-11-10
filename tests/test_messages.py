@@ -24,6 +24,19 @@ def test_encode_request_empty_data():
     assert rpc.encode_request(2, 7, data=b"").hex() == "050000000102070000"
 
 
+def test_encode_cancel_matches_librpc():
+    message = rpc.CancelMessage(1, RPCRemoteError("Cancelled", "CANCELLED", -1))
+    frame = rpc.encode_cancel(message.id, message.error)
+    assert frame == (
+        bytes.fromhex("17000000040109")
+        + b"Cancelled"
+        + b"\x09"
+        + b"CANCELLED"
+        + b"\x01"
+    )
+    assert rpc.decode_frame(frame) == message
+
+
 def test_encode_event_matches_fixture():
     # event: id 0, command 99, data deadbeef
     assert (
