@@ -6,6 +6,11 @@ from bare_rpc import RPC, CancelMessage, ResponseMessage, RPCError, decode_frame
 from pipe import End, pair
 
 
+async def settle():
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+
 def make_pair(on_request):
     left, right = pair()
     return RPC(left), RPC(right, on_request=on_request), left, right
@@ -36,7 +41,7 @@ def test_cancelling_the_awaiting_task_cancels_the_handler():
         with pytest.raises(asyncio.CancelledError):
             await task
         error = await observed
-        await asyncio.sleep(0)
+        await settle()
         responses = sent(right, ResponseMessage)
         await client.close()
         return error, responses, sent(left, CancelMessage)

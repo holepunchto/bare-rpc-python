@@ -101,7 +101,7 @@ class Session:
                 rpc._pending_response_streams,
                 rpc._outgoing_streams,
                 rpc._incoming_streams,
-                rpc._unanswered,
+                rpc._requests,
             )
         )
 
@@ -1235,13 +1235,13 @@ def test_a_cancel_that_crosses_the_open_of_a_response_stream_is_sent():
     assert all(len(entries) == 0 for entries in state)
 
 
-def test_a_cancel_that_crosses_the_reply_is_not_sent():
+def test_a_cancel_once_the_reply_is_handled_is_not_sent():
     async def body():
         session = Session()
         task = asyncio.create_task(session.rpc.request(1))
         await settle()
         await session.peer.write(encode_response(1, data=b"ok"))
-        task.cancel()
+        await cancel_once_answered(session, task)
         await settle()
         await session.rpc.close()
         return task, cancels(session)
@@ -1323,7 +1323,7 @@ def test_the_late_answer_of_a_cancelled_request_leaves_a_request_with_its_id():
 
 
 async def cancel_once_answered(session, task):
-    while session.rpc._pending_response_streams:
+    while session.rpc._pending or session.rpc._pending_response_streams:
         await asyncio.sleep(0)
     task.cancel()
 
@@ -1368,3 +1368,153 @@ def test_cancelling_a_bidirectional_stream_aborts_both_of_its_streams():
     assert task.cancelled()
     assert sent == [1]
     assert all(len(entries) == 0 for entries in state)
+
+
+async def start_bidirectional_stream(session):
+    task = asyncio.create_task(session.rpc.create_bidirectional_stream(1))
+    await settle()
+    return task
+
+
+async def start_stream_request(session):
+    _, reply = await session.rpc.stream_request(1)
+    return reply
+
+
+@pytest.mark.parametrize("start", [start_bidirectional_stream, start_stream_request])
+@pytest.mark.parametrize(
+    "answer",
+    [encode_response(1, data=b"ok"), encode_error_response(1, "no", "NO", 0)],
+    ids=["reply", "error"],
+)
+def test_a_cancel_before_the_reply_is_handled_is_sent(start, answer):
+    async def body():
+        session = Session()
+        waiter = await start(session)
+        await session.feed(encode_stream(1, REQUEST | StreamFlag.OPEN))
+        await session.peer.write(answer)
+        waiter.cancel()
+        await settle()
+        state = session.state()
+        await session.rpc.close()
+        return cancels(session), state
+
+    sent, state = asyncio.run(asyncio.wait_for(body(), 2))
+    assert sent == [1]
+    assert all(len(entries) == 0 for entries in state)
+
+
+def test_a_cancel_that_crosses_the_reply_reaches_a_later_read_of_the_request_stream():
+    gate = asyncio.Event()
+    read = []
+    readers = []
+
+    async def read_later(req):
+        await gate.wait()
+        try:
+            await req.request_stream.read()
+        except RPCRemoteError as exc:
+            read.append(exc)
+
+    async def on_request(req):
+        await req.reply(b"ok")
+        readers.append(asyncio.create_task(read_later(req)))
+
+    async def body():
+        session = Session(on_request=on_request)
+        await session.feed(encode_request(1, 1, stream=StreamFlag.OPEN))
+        await session.feed(encode_cancel(1, ERROR))
+        gate.set()
+        await asyncio.gather(*readers)
+        before = list(session.local.written)
+        await session.feed(encode_request(1, 1))
+        await session.rpc.close()
+        return before, session.errors
+
+    written, errors = asyncio.run(asyncio.wait_for(body(), 2))
+    assert read == [ERROR]
+    assert written == [encode_response(1, data=b"ok")]
+    assert errors == []
+
+
+def test_a_request_stream_that_the_peer_closes_unopened_ends_and_is_forgotten():
+    gate = asyncio.Event()
+    read = []
+    readers = []
+
+    async def read_later(req):
+        await gate.wait()
+        read.append(await req.request_stream.read())
+
+    async def on_request(req):
+        await req.reply(b"ok")
+        readers.append(asyncio.create_task(read_later(req)))
+
+    async def body():
+        session = Session(on_request=on_request)
+        await session.feed(
+            encode_request(1, 1, stream=StreamFlag.OPEN),
+            encode_stream(1, REQUEST | StreamFlag.CLOSE),
+        )
+        state = session.state()
+        gate.set()
+        await asyncio.gather(*readers)
+        written = list(session.local.written)
+        await session.rpc.close()
+        return state, written
+
+    state, written = asyncio.run(asyncio.wait_for(body(), 2))
+    assert all(len(entries) == 0 for entries in state)
+    assert read == [None]
+    assert written == [encode_response(1, data=b"ok")]
+
+
+def test_closing_cancels_a_handler_whose_id_the_peer_reused():
+    cancelled = []
+
+    async def on_request(req):
+        await req.reply(b"ok")
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            cancelled.append(req.data)
+            raise
+
+    async def body():
+        session = Session(on_request=on_request)
+        await session.feed(encode_request(1, 1, data=b"old"))
+        await session.feed(encode_request(1, 1, data=b"new"))
+        await session.rpc.close()
+        await settle()
+        return sorted(cancelled)
+
+    assert asyncio.run(asyncio.wait_for(body(), 2)) == [b"new", b"old"]
+
+
+def test_a_cancelled_handler_that_finishes_late_keeps_a_request_with_its_id():
+    gate = asyncio.Event()
+    observed = []
+    other = RPCRemoteError("other", "OTHER", 2)
+
+    async def on_request(req):
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            observed.append((req.data, req.cancellation_error))
+            if req.data == b"new":
+                raise
+        await gate.wait()
+        await req.reply(b"late")
+
+    async def body():
+        session = Session(on_request=on_request)
+        await session.feed(encode_request(1, 1, data=b"old"))
+        await session.feed(encode_cancel(1, ERROR))
+        await session.feed(encode_request(1, 1, data=b"new"))
+        gate.set()
+        await settle()
+        await session.feed(encode_cancel(1, other))
+        await session.rpc.close()
+
+    asyncio.run(asyncio.wait_for(body(), 2))
+    assert observed == [(b"old", ERROR), (b"new", other)]

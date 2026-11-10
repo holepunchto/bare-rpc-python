@@ -111,6 +111,8 @@ Read an `IncomingStream` with `async for`, or one chunk at a time with `await st
 
 Cancelling the future that a call waits for cancels the request. Cancelling the task that awaits `request()`, `request_with_response_stream()` or `create_bidirectional_stream()` does that, and so does cancelling the `reply` future of `stream_request()`. The peer is told to stop handling the request, and the streams of the request fail with an `RPCError` with the code `CANCELLED`. Once the answer has arrived, cancelling does nothing. A request stream of `stream_request()` that is still open then stays open, so end or destroy it to stop it.
 
+The same goes once `request_with_response_stream()` or `create_bidirectional_stream()` has returned its stream. Cancelling the task that reads the stream then only interrupts the read, as with any asyncio stream. To stop a streamed reply, destroy the stream.
+
 `request()` also takes a `timeout` in seconds. If no reply arrives in time, the request is cancelled with the code `TIMEOUT`, and the call raises an `RPCError` with that code:
 
 ```python

@@ -49,6 +49,7 @@ class IncomingRequest:
         self._response_stream = None
         self._sent = False
         self._cancellation_error = None
+        self._task = None
 
     @property
     def request_stream(self) -> IncomingStream | None:
@@ -61,6 +62,7 @@ class IncomingRequest:
         """
         if self._streamed and self._request_stream is None:
             self._request_stream = self._rpc._open_request_stream(self)
+            self._rpc._forget_request(self)
         return self._request_stream
 
     @property
@@ -105,7 +107,7 @@ class IncomingRequest:
         # The peer may already reuse the id of a cancelled request.
         if self._cancellation_error is not None:
             return False
-        return self._rpc._on_answered(self.id)
+        return self._rpc._on_answered(self)
 
     async def create_response_stream(self) -> OutgoingStream:
         """Answer the request by opening a response stream and return its
